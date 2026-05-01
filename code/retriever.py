@@ -630,7 +630,7 @@ class CorpusRetriever:
         domain_hint: str | None,
         top_k: int = 8,
         domain_boost: float | None = None,
-    ) -> tuple[list[tuple[Chunk, float]], dict[str, float]]:
+    ) -> tuple[list[tuple[Chunk, float]], dict[str, Any]]:
         self.ensure_built()
         self._materialize_semantic_matrix()
         self._materialize_dense_matrix()
@@ -677,8 +677,14 @@ class CorpusRetriever:
         dense_all: Any = None
         dense_window: list[float] | None = None
         mx_d = 1.0
+        dense_query_error = ""
         if self._dense_mat is not None and HYBRID_DENSE_WEIGHT > 1e-9 and np is not None:
-            q_dense = _embed_dense_query_vector(_dense_embed_kind(), query)
+            q_dense: Any = None
+            try:
+                q_dense = _embed_dense_query_vector(_dense_embed_kind(), query)
+            except Exception as e:
+                dense_query_error = _dense_build_failure_detail(e, max_len=160)
+                q_dense = None
             if q_dense is not None:
                 dense_all = self._dense_mat @ q_dense
                 dense_window = [max(0.0, float(dense_all[i])) for i in cand_idx]
@@ -735,7 +741,11 @@ class CorpusRetriever:
             stats["dense_top1"] = 0.0
             stats["dense_margin"] = 0.0
             stats["dense_enabled"] = 0.0
-            stats["embedding_model_name"] = ""
+            stats["embedding_model_name"] = (
+                _dense_stats_model_name() if (self._dense_mat is not None and dense_query_error) else ""
+            )
+        if dense_query_error:
+            stats["dense_query_error"] = dense_query_error
         return out, stats
 
 

@@ -92,5 +92,31 @@ class TestEmbedKind(unittest.TestCase):
         self.assertTrue(d.endswith("…"))
 
 
+class TestDenseQueryFailure(unittest.TestCase):
+    def test_search_dense_query_failure_falls_back_lexical(self):
+        import numpy as np
+
+        import retriever as ret
+
+        repo = pathlib.Path(__file__).resolve().parents[2]
+        data = repo / "data"
+        if not data.is_dir():
+            self.skipTest("no data directory")
+        r = ret.CorpusRetriever(data)
+        r.ensure_built()
+        if not r.chunks or not r._tokenized:
+            self.skipTest("empty index")
+        r._dense_mat = np.zeros((len(r.chunks), 3), dtype=np.float32)
+        with mock.patch.object(ret, "_embed_dense_query_vector", side_effect=RuntimeError("network_down")):
+            ranked, stats = r.search(
+                "how do I reset my password for hacker rank account login",
+                "hackerrank",
+                top_k=4,
+            )
+        self.assertIn("network_down", stats.get("dense_query_error", ""))
+        self.assertEqual(float(stats.get("dense_enabled", 1)), 0.0)
+        self.assertTrue(ranked)
+
+
 if __name__ == "__main__":
     unittest.main()

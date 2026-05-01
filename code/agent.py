@@ -214,7 +214,7 @@ def _attach_routing_meta(
 
 
 def _aggregate_confidence_score(
-    stats: dict[str, float],
+    stats: dict[str, Any],
     rag_ok: bool,
     retrieval_esc: bool,
 ) -> float:
@@ -241,7 +241,7 @@ def _aggregate_confidence_score(
 def _compose_decision_trace(
     *,
     ranked: list[tuple[Any, float]],
-    stats: dict[str, float],
+    stats: dict[str, Any],
     rag_ok: bool,
     rag_note: str,
     retrieval_esc: bool,
@@ -287,6 +287,7 @@ def _compose_decision_trace(
             "model": stats.get("embedding_model_name") or None,
             "dense_top1": stats.get("dense_top1"),
             "dense_margin": stats.get("dense_margin"),
+            "query_error": stats.get("dense_query_error") or None,
         },
         "retrieval_escalate": retrieval_esc,
         "retrieval_escalate_reason": retr_reason or None,
@@ -578,7 +579,7 @@ def triage_with_llm(
     must_escalate: bool,
     esc_reason: str,
     ranked: list[tuple[Any, float]],
-    ret_stats: dict[str, float],
+    ret_stats: dict[str, Any],
     conf_ok: bool,
     llm: AgentLlm,
 ) -> dict[str, Any]:
@@ -872,6 +873,8 @@ def triage_ticket(
         f"domain_scores={dom_scores}",
         f"ambiguous_domain={dom_note or ev_note or 'clear'}",
     ]
+    if stats.get("dense_query_error"):
+        justification_bits.append(f"dense_query_error={stats['dense_query_error']}")
 
     prod_area_llm_fallback = infer_product_area(effective_domain, chunks)
 
@@ -1039,23 +1042,22 @@ def triage_ticket(
 
     _attach_routing_meta(out, risk, uspec, corp_esc, retrieval_esc)
     conf_score = _aggregate_confidence_score(stats, rag_ok, retrieval_esc)
-    log(
-        "CONFIDENCE",
-        " ".join(
-            [
-                f"score={conf_score:.3f}",
-                f"risk_tier={out.get('risk_tier', 'none')}",
-                f"escalation_strength={out.get('escalation_strength', 'none')}",
-                f"top1={stats.get('top1', 0):.5f}",
-                f"margin={stats.get('margin', 0):.5f}",
-                f"sem_en={int(float(stats.get('semantic_enabled') or 0))}",
-                f"sem_m={float(stats.get('semantic_margin') or 0):.4f}",
-                f"d_en={int(float(stats.get('dense_enabled') or 0))}",
-                f"d_m={float(stats.get('dense_margin') or 0):.4f}",
-                f"emb={(stats.get('embedding_model_name') or 'off')[:40]}",
-            ]
-        ),
-    )
+    conf_bits = [
+        f"score={conf_score:.3f}",
+        f"risk_tier={out.get('risk_tier', 'none')}",
+        f"escalation_strength={out.get('escalation_strength', 'none')}",
+        f"top1={stats.get('top1', 0):.5f}",
+        f"margin={stats.get('margin', 0):.5f}",
+        f"sem_en={int(float(stats.get('semantic_enabled') or 0))}",
+        f"sem_m={float(stats.get('semantic_margin') or 0):.4f}",
+        f"d_en={int(float(stats.get('dense_enabled') or 0))}",
+        f"d_m={float(stats.get('dense_margin') or 0):.4f}",
+        f"emb={(stats.get('embedding_model_name') or 'off')[:40]}",
+    ]
+    dqe = stats.get("dense_query_error")
+    if dqe:
+        conf_bits.append(f"dense_q_err={str(dqe)[:120]}")
+    log("CONFIDENCE", " ".join(conf_bits))
 
     if RUNTIME_CLI.get("embed_trace"):
         out["trace"] = _compose_decision_trace(
