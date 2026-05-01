@@ -81,6 +81,16 @@ class TestEmbedKind(unittest.TestCase):
         self.assertIn("401", str(ctx.exception))
         self.assertIn("Incorrect API key", str(ctx.exception))
 
+    def test_dense_build_failure_detail(self):
+        import retriever as ret
+
+        self.assertEqual(ret._dense_build_failure_detail(ValueError("bad")), "bad")
+        self.assertNotIn("|", ret._dense_build_failure_detail(RuntimeError("a|b")))
+        long = "z" * 400
+        d = ret._dense_build_failure_detail(RuntimeError(long))
+        self.assertLessEqual(len(d), 220)
+        self.assertTrue(d.endswith("…"))
+
 
 if __name__ == "__main__":
     unittest.main()

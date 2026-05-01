@@ -101,6 +101,14 @@ def _dense_backend_requested() -> bool:
     return _dense_embed_kind() != "none"
 
 
+def _dense_build_failure_detail(exc: BaseException, max_len: int = 220) -> str:
+    """One-line, log-safe summary for INDEX logs (strip pipes/newlines; bounded length)."""
+    msg = str(exc).replace("\n", " ").replace("|", "/").strip()
+    if len(msg) > max_len:
+        return msg[: max_len - 1] + "…"
+    return msg or type(exc).__name__
+
+
 def _fingerprint_dense_model() -> str:
     k = _dense_embed_kind()
     if k == "openai":
@@ -545,9 +553,10 @@ class CorpusRetriever:
                 self._dense_mat = _openai_embed_texts(texts)
             elif kind == "gemini":
                 self._dense_mat = _gemini_embed_texts(texts)
-        except Exception:
+        except Exception as e:
             self._dense_mat = None
-            self.last_index_event = f"{self.last_index_event}|dense_build_failed"
+            detail = _dense_build_failure_detail(e)
+            self.last_index_event = f"{self.last_index_event}|dense_build_failed:{detail}"
 
     def _materialize_semantic_matrix(self) -> None:
         if self._semantic_materialized:
