@@ -164,7 +164,8 @@ def _parse_gemini_embedding_batch(r: Any) -> list[Any]:
     return []
 
 
-def _gemini_embed_texts(texts: list[str]) -> Any:
+def _gemini_embed_texts(texts: list[str], *, task_type: str = "retrieval_document") -> Any:
+    """Embed with Gemini. Use task_type=retrieval_document for corpus rows; retrieval_query for live queries."""
     if not GOOGLE_API_KEY or np is None:
         raise RuntimeError("GOOGLE_API_KEY or GEMINI_API_KEY missing for gemini embedding backend")
     import google.generativeai as genai
@@ -177,7 +178,7 @@ def _gemini_embed_texts(texts: list[str]) -> Any:
         r = genai.embed_content(
             model=GEMINI_EMBEDDING_MODEL,
             content=batch,
-            task_type="retrieval_document",
+            task_type=task_type,
         )
         parsed = _parse_gemini_embedding_batch(r)
         if len(parsed) == len(batch):
@@ -187,7 +188,7 @@ def _gemini_embed_texts(texts: list[str]) -> Any:
             r1 = genai.embed_content(
                 model=GEMINI_EMBEDDING_MODEL,
                 content=t,
-                task_type="retrieval_document",
+                task_type=task_type,
             )
             one = _parse_gemini_embedding_batch(r1 if isinstance(r1, dict) else {})
             if not one and r1 is not None and getattr(r1, "embedding", None) is not None:
@@ -217,7 +218,7 @@ def _embed_dense_query_vector(kind: str, query: str) -> Any:
     if kind == "openai":
         return _openai_embed_texts([q])[0]
     if kind == "gemini":
-        return _gemini_embed_texts([q])[0]
+        return _gemini_embed_texts([q], task_type="retrieval_query")[0]
     return None
 
 
