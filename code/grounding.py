@@ -17,6 +17,8 @@ ALLOWED_HINT_HOSTS = frozenset(
         "usa.visa.com",
         "docs.claude.com",
         "anthropic.com",
+        "help.anthropic.com",
+        "support.anthropic.com",
         "portal.usepylon.com",
         "claude.ai",
     }

@@ -19,10 +19,18 @@ class LlmStructuredReply(BaseModel):
 
 
 def strip_json_fence(text: str) -> str:
-    raw = text.strip()
+    """Extract JSON from model output; tolerate multiple fences or stray prose."""
+    raw = (text or "").strip()
+    if not raw:
+        return raw
     if raw.startswith("```"):
         parts = raw.split("```")
-        raw = parts[1].lstrip("\n").lstrip()
-        if raw.lower().startswith("json"):
-            raw = raw[4:].lstrip()
-    return raw
+        chunk = ""
+        if len(parts) >= 2:
+            chunk = parts[1].lstrip("\n").lstrip()
+        if len(chunk) < 8 and len(parts) >= 4:
+            chunk = parts[2].lstrip("\n").lstrip()
+        raw = chunk or raw
+    if raw.lower().startswith("json"):
+        raw = raw[4:].lstrip()
+    return raw.strip().strip("`").strip()

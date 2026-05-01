@@ -30,6 +30,7 @@ from config import (
     CLI_EMBED_TRACE,
     DATA_DIR,
     LOG_FILE,
+    LLM_USER_BLOB_MAX_CHARS,
     QUERY_MAX_CHARS,
     REPO_ROOT,
 )
@@ -83,6 +84,41 @@ def _truncate_query_blob(blob: str) -> str:
     if len(blob) <= QUERY_MAX_CHARS:
         return blob
     return blob[: max(512, QUERY_MAX_CHARS - 20)].rstrip() + "\n…[truncated]"
+
+
+def _trim_llm_user_content(subject: str, issue: str, max_chars: int) -> tuple[str, str]:
+    """Keep retrieval/classification on full text upstream; cap only the LLM user envelope."""
+    s = (subject or "").strip()
+    i = (issue or "").strip()
+    overhead = 140
+    budget = max(4096, max_chars - overhead)
+    if len(s) + len(i) <= budget:
+        return s, i
+    s_cap = min(1200, max(180, budget // 6))
+    if len(s) > s_cap:
+        s = s[: max(1, s_cap - 1)] + "…"
+    room = budget - len(s)
+    if len(i) > room:
+        cut = max(800, room - 40)
+        i = i[:cut].rstrip() + "\n\n…[issue trimmed for model context limit]"
+    return s, i
+
+
+def _save_csv_dict_rows(out_path: Path, rows: list[dict[str, Any]]) -> bool:
+    if not rows:
+        return False
+    fieldnames = list(rows[0].keys())
+    try:
+        with out_path.open("w", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
+            w.writeheader()
+            for r in rows:
+                w.writerow(r)
+    except OSError as e:
+        log("CSV_WRITE_ERR", repr(e))
+        print(_c(f"Cannot write output CSV: {e}", RED))
+        return False
+    return True
 
 
 def _compose_decision_trace(
@@ -431,10 +467,11 @@ ESCALATION_MESSAGE:
 {esc_msg}
 """
 
-    base_user = f"""Subject: {subject}
+    sub_u, iss_u = _trim_llm_user_content(subject, issue, LLM_USER_BLOB_MAX_CHARS)
+    base_user = f"""Subject: {sub_u}
 
 Issue:
-{issue}
+{iss_u}
 
 Initial classification guess for request_type: {request_type_guess}
 """
@@ -865,48 +902,43 @@ def process_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quiet: bool
         else "Batch CSV — no LLM credentials (snippet path + conservative escalation)"
     )
 
-    for i, row in enumerate(rows, 1):
-        issue = row.get(issue_col, "") or ""
-        subject = row.get(subject_col, "") or ""
-        company = row.get(company_col, "") or ""
-
-        log("TICKET", f"ROW={i} | subject={subject[:120]!r} | issue={issue[:240]!r}")
-        if not quiet:
-            label = subject[:52] + ("…" if len(subject) > 52 else "")
-            print(progress_line(i, total_n, label or f"row {i}"))
-        try:
-            tri = triage_ticket(str(i), issue, subject, company, llm, retriever)
-        except Exception as exc:  # pragma: no cover
-            log("ROW_FATAL", repr(exc))
-            tri = _tri_from_row_fatal(exc)
-
-        merged = dict(row)
-        merged.update(
-            {
-                "status": _csv_field(tri.get("status")),
-                "product_area": _csv_field(tri.get("product_area")),
-                "response": _csv_field(tri.get("response")),
-                "justification": _csv_field(tri.get("justification")),
-                "request_type": _csv_field(tri.get("request_type")),
-            }
-        )
-        out_rows.append(merged)
-
-        time.sleep(max(0.0, BATCH_SLEEP_S))
-
-    fieldnames = list(out_rows[0].keys())
     try:
-        with out_path.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
-            w.writeheader()
-            for r in out_rows:
-                w.writerow(r)
+        for i, row in enumerate(rows, 1):
+            issue = row.get(issue_col, "") or ""
+            subject = row.get(subject_col, "") or ""
+            company = row.get(company_col, "") or ""
+
+            log("TICKET", f"ROW={i} | subject={subject[:120]!r} | issue={issue[:240]!r}")
+            if not quiet:
+                label = subject[:52] + ("…" if len(subject) > 52 else "")
+                print(progress_line(i, total_n, label or f"row {i}"))
+            try:
+                tri = triage_ticket(str(i), issue, subject, company, llm, retriever)
+            except Exception as exc:  # pragma: no cover
+                log("ROW_FATAL", repr(exc))
+                tri = _tri_from_row_fatal(exc)
+
+            merged = dict(row)
+            merged.update(
+                {
+                    "status": _csv_field(tri.get("status")),
+                    "product_area": _csv_field(tri.get("product_area")),
+                    "response": _csv_field(tri.get("response")),
+                    "justification": _csv_field(tri.get("justification")),
+                    "request_type": _csv_field(tri.get("request_type")),
+                }
+            )
+            out_rows.append(merged)
+
+            time.sleep(max(0.0, BATCH_SLEEP_S))
+    except KeyboardInterrupt:
+        log("BATCH_INTERRUPT", f"official_csv rows_materialized={len(out_rows)} of {total_n}")
+        print(_c("\nInterrupted — flushing partial CSV and transcript.", YELLOW))
+
+    if out_rows and _save_csv_dict_rows(out_path, out_rows):
         _batch_summary_status(out_rows, log_tag="BATCH", quiet=quiet)
         if not quiet:
             print(_c(f"\nWrote {len(out_rows)} rows → {out_path.resolve()}", GREEN))
-    except OSError as e:
-        print(_c(f"Cannot write output CSV: {e}", RED))
-        log("CSV_WRITE_ERR", repr(e))
 
 
 def process_legacy_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quiet: bool = False) -> None:
@@ -969,54 +1001,49 @@ def process_legacy_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quie
     if not quiet:
         print_banner_subtitle("Legacy CSV harness — triage_* extension columns")
 
-    for i, row in enumerate(rows, 1):
-        tid = str(row.get(id_col, "") or "").strip()
-        text = row.get(text_col, "") or ""
-        company = row.get(company_col, "") if company_col else ""
-        subject = row.get(subject_col, "") if subject_col else ""
-
-        if not tid and text:
-            tid = str(len(out_rows) + 1)
-
-        log("TICKET", f"ID={tid} | text={text[:240]!r}")
-        if not quiet:
-            print(progress_line(i, total_n, tid or f"row {i}"))
-        try:
-            tri = triage_ticket(tid or str(len(out_rows) + 1), text, subject, company, llm, retriever)
-        except Exception as exc:  # pragma: no cover
-            log("ROW_FATAL", repr(exc))
-            tri = _tri_from_row_fatal(exc)
-
-        action = "ESCALATED" if tri["status"] == "escalated" else "RESPOND"
-        merged = dict(row)
-        merged.update(
-            {
-                "triage_domain": _csv_field(tri.get("debug_effective_domain")),
-                "triage_request_type": _csv_field(tri.get("debug_routing_label")),
-                "triage_product_area": _csv_field(tri.get("product_area")),
-                "triage_action": _csv_field(action),
-                "triage_escalation_reason": _csv_field(tri.get("escalation_reason")),
-                "triage_response": _csv_field(tri.get("response")),
-                "triage_sources": _csv_field(" | ".join(tri.get("sources") or [])),
-            }
-        )
-        out_rows.append(merged)
-
-        time.sleep(max(0.0, BATCH_SLEEP_S))
-
-    fieldnames = list(out_rows[0].keys())
     try:
-        with out_path.open("w", newline="", encoding="utf-8") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
-            w.writeheader()
-            for r in out_rows:
-                w.writerow(r)
+        for i, row in enumerate(rows, 1):
+            tid = str(row.get(id_col, "") or "").strip()
+            text = row.get(text_col, "") or ""
+            company = row.get(company_col, "") if company_col else ""
+            subject = row.get(subject_col, "") if subject_col else ""
+
+            if not tid and text:
+                tid = str(len(out_rows) + 1)
+
+            log("TICKET", f"ID={tid} | text={text[:240]!r}")
+            if not quiet:
+                print(progress_line(i, total_n, tid or f"row {i}"))
+            try:
+                tri = triage_ticket(tid or str(len(out_rows) + 1), text, subject, company, llm, retriever)
+            except Exception as exc:  # pragma: no cover
+                log("ROW_FATAL", repr(exc))
+                tri = _tri_from_row_fatal(exc)
+
+            action = "ESCALATED" if tri["status"] == "escalated" else "RESPOND"
+            merged = dict(row)
+            merged.update(
+                {
+                    "triage_domain": _csv_field(tri.get("debug_effective_domain")),
+                    "triage_request_type": _csv_field(tri.get("debug_routing_label")),
+                    "triage_product_area": _csv_field(tri.get("product_area")),
+                    "triage_action": _csv_field(action),
+                    "triage_escalation_reason": _csv_field(tri.get("escalation_reason")),
+                    "triage_response": _csv_field(tri.get("response")),
+                    "triage_sources": _csv_field(" | ".join(tri.get("sources") or [])),
+                }
+            )
+            out_rows.append(merged)
+
+            time.sleep(max(0.0, BATCH_SLEEP_S))
+    except KeyboardInterrupt:
+        log("BATCH_INTERRUPT", f"legacy_csv rows_materialized={len(out_rows)} of {total_n}")
+        print(_c("\nInterrupted — flushing partial legacy CSV.", YELLOW))
+
+    if out_rows and _save_csv_dict_rows(out_path, out_rows):
         _batch_summary_legacy(out_rows, quiet=quiet)
         if not quiet:
             print(_c(f"\nWrote legacy triage CSV ({len(out_rows)} rows)", GREEN))
-    except OSError as e:
-        print(_c(f"Cannot write legacy output: {e}", RED))
-        log("CSV_WRITE_ERR", repr(e))
 
 
 def interactive_mode(llm: AgentLlm | None) -> None:

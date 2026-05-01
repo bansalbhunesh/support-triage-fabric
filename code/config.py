@@ -22,6 +22,8 @@ HYBRID_OVERLAP_WEIGHT = float(os.environ.get("SUPPORT_AGENT_HYBRID_OVERLAP", "0.
 # LLM
 LLM_TEMPERATURE = float(os.environ.get("SUPPORT_AGENT_LLM_TEMPERATURE", "0"))
 LLM_MAX_TOKENS = int(os.environ.get("SUPPORT_AGENT_LLM_MAX_TOKENS", "1200"))
+# Cap subject+issue text in the LLM user message (tokens + provider limits).
+LLM_USER_BLOB_MAX_CHARS = int(os.environ.get("SUPPORT_AGENT_LLM_USER_MAX_CHARS", "26000"))
 
 
 def _pick_google_api_key() -> str:
