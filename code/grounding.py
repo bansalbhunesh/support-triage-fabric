@@ -36,6 +36,8 @@ def allowlist_urls_from_chunks(chunks: list) -> frozenset[str]:
 
 
 _URL_RE = re.compile(r"https?://[^\s\]>\),]+", re.I)
+_TEL_RE = re.compile(r"\btel:\+?[\d\s\-().]{6,45}\b", re.I)
+_MAILTO_RE = re.compile(r"mailto:[^\s\]>\),]+", re.I)
 
 
 def extract_urls_from_text(text: str) -> list[str]:
@@ -46,6 +48,40 @@ def extract_urls_from_text(text: str) -> list[str]:
     for m in _URL_RE.findall(text):
         found.append(m.rstrip(".,);\"')"))
     return found
+
+
+def extract_tel_links(text: str) -> list[str]:
+    if not text:
+        return []
+    return [m.rstrip(".,);\"')") for m in _TEL_RE.findall(text)]
+
+
+def extract_mailto_links(text: str) -> list[str]:
+    if not text:
+        return []
+    return [m.rstrip(".,);\"')") for m in _MAILTO_RE.findall(text)]
+
+
+def _tel_digits_ok(raw: str) -> bool:
+    u = (raw or "").strip()
+    if not u.lower().startswith("tel:"):
+        return False
+    digits = re.sub(r"\D", "", u[4:])
+    return 8 <= len(digits) <= 18
+
+
+def _mailto_support_ok(raw: str) -> bool:
+    low = (raw or "").lower()
+    for host in (
+        "hackerrank.com",
+        "anthropic.com",
+        "visa.com",
+        "claude.com",
+        "usepylon.com",
+    ):
+        if host in low:
+            return True
+    return False
 
 
 def _same_or_prefix(u: str, allowlist: frozenset[str]) -> bool:
@@ -89,6 +125,14 @@ def grounding_violations(
             if _host_trusted(host) or _same_or_prefix(u.rstrip("/"), allowlist):
                 continue
             return False, f"unsupported_url_in_body:{host}"
+        for t in extract_tel_links(response_text):
+            if _tel_digits_ok(t):
+                continue
+            return False, f"unsupported_tel_in_body:{t[:80]}"
+        for m in extract_mailto_links(response_text):
+            if _mailto_support_ok(m):
+                continue
+            return False, f"unsupported_mailto_in_body:{m[:100]}"
 
     return True, "ok"
 

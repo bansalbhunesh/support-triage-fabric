@@ -31,6 +31,7 @@ from config import (
     CLI_EMBED_TRACE,
     DATA_DIR,
     DEFAULT_DOMAIN_CONFIRMED_BOOST,
+    GROUNDING_SCAN_RESPONSE_URLS,
     LOG_FILE,
     LLM_USER_BLOB_MAX_CHARS,
     QUERY_MAX_CHARS,
@@ -42,7 +43,7 @@ from grounding import allowlist_urls_from_chunks, grounding_violations
 from llm_clients import AgentLlm, build_agent_llm, synthesize_json_turn
 from models import LlmStructuredReply, strip_json_fence
 from retriever import CorpusRetriever, retrieval_confidence_ok, should_force_escalate_from_retrieval
-from risk import corpus_escalation, escalation_message_for, heuristic_risk_scan
+from risk import RiskSignal, corpus_escalation, escalation_message_for, heuristic_risk_scan
 
 # ── Config (paths) ─────────────────────────────────────────────────────────────
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -180,6 +181,57 @@ def _save_csv_dict_rows(out_path: Path, rows: list[dict[str, Any]]) -> bool:
     return True
 
 
+def _escalation_strength_label(
+    risk: RiskSignal,
+    uspec: bool,
+    corp_esc: bool,
+    status: str,
+    retrieval_esc: bool,
+) -> str:
+    if status != "escalated":
+        return "none"
+    if risk.tier == "hard" or corp_esc:
+        return "hard"
+    if risk.tier == "soft" or uspec:
+        return "soft"
+    if retrieval_esc:
+        return "operational"
+    return "standard"
+
+
+def _attach_routing_meta(
+    out: dict[str, Any],
+    risk: RiskSignal | None,
+    uspec: bool,
+    corp_esc: bool,
+    retrieval_esc: bool,
+) -> None:
+    r = risk if risk is not None else RiskSignal(False, "none", "", "")
+    out["risk_tier"] = r.tier
+    out["escalation_strength"] = _escalation_strength_label(
+        r, uspec, corp_esc, str(out.get("status") or ""), retrieval_esc
+    )
+
+
+def _aggregate_confidence_score(
+    stats: dict[str, float],
+    rag_ok: bool,
+    retrieval_esc: bool,
+) -> float:
+    top1 = float(stats.get("top1") or 0.0)
+    margin = float(stats.get("margin") or 0.0)
+    sem_en = float(stats.get("semantic_enabled") or 0.0)
+    sem_m = float(stats.get("semantic_margin") or 0.0)
+    sem_t = float(stats.get("semantic_top1") or 0.0)
+    lex = min(1.0, top1 / 14.0) * 0.38 + min(1.0, margin * 18.0) * 0.32
+    sem = 0.0
+    if sem_en > 0.5:
+        sem = min(1.0, sem_t * 6.0) * 0.15 + min(1.0, sem_m * 12.0) * 0.15
+    anchor = 0.15 if rag_ok else 0.0
+    penalty = 0.12 if retrieval_esc else 0.0
+    return max(0.0, min(1.0, lex + sem + anchor - penalty))
+
+
 def _compose_decision_trace(
     *,
     ranked: list[tuple[Any, float]],
@@ -190,6 +242,9 @@ def _compose_decision_trace(
     retr_reason: str,
     domain_note: str | None,
     justification_bits: list[str],
+    risk_tier: str,
+    escalation_strength: str,
+    confidence_score: float,
 ) -> dict[str, Any]:
     evid: list[dict[str, Any]] = []
     for i, (ch, raw_s) in enumerate(ranked[:6], start=1):
@@ -205,6 +260,9 @@ def _compose_decision_trace(
 
     qt = stats.get("query_tokens", "?")
     return {
+        "confidence_score": round(float(confidence_score), 4),
+        "risk_tier": risk_tier,
+        "escalation_strength": escalation_strength,
         "retrieval_lexical": {
             "top1_score": stats.get("top1"),
             "margin": stats.get("margin"),
@@ -213,13 +271,18 @@ def _compose_decision_trace(
             "confidence_gate_ok": rag_ok,
             "confidence_gate_note": rag_note,
         },
+        "retrieval_semantic": {
+            "enabled": bool(float(stats.get("semantic_enabled") or 0.0) > 0.5),
+            "semantic_top1": stats.get("semantic_top1"),
+            "semantic_margin": stats.get("semantic_margin"),
+        },
         "retrieval_escalate": retrieval_esc,
         "retrieval_escalate_reason": retr_reason or None,
         "domain_note": domain_note,
         "decision_signals": justification_bits.copy(),
         "evidence": evid,
         "explain": (
-            "Retrieval blends BM25 with token-overlap fusion; lexical scores are deterministic. "
+            "Retrieval fuses BM25, token overlap, and a deterministic semantic projection (hashed token signatures). "
             "When the confidence gate signals weak evidence—or risk routers fire—the agent escalates instead of hallucinating policy."
         ),
     }
@@ -640,7 +703,12 @@ Initial classification guess for request_type: {request_type_guess}
                 "escalation_reason": "grounding:missing_citations",
             }
 
-        ok_ev, gv_reason = grounding_violations(cites, allow, str(data.get("response") or ""))
+        ok_ev, gv_reason = grounding_violations(
+            cites,
+            allow,
+            str(data.get("response") or ""),
+            check_body_urls=GROUNDING_SCAN_RESPONSE_URLS,
+        )
         if not ok_ev:
             log("GROUNDING_FAIL", gv_reason[:300])
             return {
@@ -708,6 +776,7 @@ def triage_ticket(
                 "reason": "empty_issue_and_subject",
                 "explain": "Fail-safe path for blank CSV rows / accidental submissions.",
             }
+        _attach_routing_meta(out_early, None, False, False, False)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         log(
             "RESULT",
@@ -716,6 +785,10 @@ def triage_ticket(
         log("REASONING", "empty_ticket_guard")
         log("SOURCES", "")
         log("EXPLAIN", "Retrieval skipped — no query text.")
+        log(
+            "CONFIDENCE",
+            "score=0.000 risk_tier=none escalation_strength=none retrieval_skipped=1",
+        )
         return out_early
 
     req_type = classify_request_type(issue or "", subject or "")
@@ -745,17 +818,6 @@ def triage_ticket(
     risk = heuristic_risk_scan(issue or "", subject or "", effective_domain)
     corp_esc, corp_reason = corpus_escalation(issue or "", effective_domain)
 
-    must_esc = risk.escalate or corp_esc or uspec
-    esc_reason_primary = "; ".join(
-        x
-        for x in [
-            risk.reason if risk.escalate else "",
-            corp_reason if corp_esc else "",
-            uspec_reason if uspec else "",
-        ]
-        if x
-    )
-
     retrieval_esc, retr_reason = should_force_escalate_from_retrieval(stats, llm_sess is not None)
 
     rag_ok, rag_note = retrieval_confidence_ok(stats, llm_sess is not None)
@@ -768,6 +830,17 @@ def triage_ticket(
         effective_domain,
         rag_ok,
         retrieval_esc,
+    )
+
+    must_esc = risk.escalate or corp_esc or uspec
+    esc_reason_primary = "; ".join(
+        x
+        for x in [
+            risk.reason if risk.escalate else "",
+            corp_reason if corp_esc else "",
+            uspec_reason if uspec else "",
+        ]
+        if x
     )
 
     chunks = [c for c, _ in ranked]
@@ -951,6 +1024,23 @@ def triage_ticket(
             "debug_effective_domain": effective_domain,
         }
 
+    _attach_routing_meta(out, risk, uspec, corp_esc, retrieval_esc)
+    conf_score = _aggregate_confidence_score(stats, rag_ok, retrieval_esc)
+    log(
+        "CONFIDENCE",
+        " ".join(
+            [
+                f"score={conf_score:.3f}",
+                f"risk_tier={out.get('risk_tier', 'none')}",
+                f"escalation_strength={out.get('escalation_strength', 'none')}",
+                f"top1={stats.get('top1', 0):.5f}",
+                f"margin={stats.get('margin', 0):.5f}",
+                f"sem_en={int(float(stats.get('semantic_enabled') or 0))}",
+                f"sem_m={float(stats.get('semantic_margin') or 0):.4f}",
+            ]
+        ),
+    )
+
     if RUNTIME_CLI.get("embed_trace"):
         out["trace"] = _compose_decision_trace(
             ranked=ranked,
@@ -961,6 +1051,9 @@ def triage_ticket(
             retr_reason=retr_reason,
             domain_note=(dom_note or ev_note),
             justification_bits=justification_bits,
+            risk_tier=str(out.get("risk_tier") or "none"),
+            escalation_strength=str(out.get("escalation_strength") or "none"),
+            confidence_score=conf_score,
         )
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -1148,6 +1241,8 @@ def process_legacy_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quie
                     "triage_escalation_reason": _csv_field(tri.get("escalation_reason")),
                     "triage_response": _csv_field(tri.get("response")),
                     "triage_sources": _csv_field(" | ".join(tri.get("sources") or [])),
+                    "triage_risk_tier": _csv_field(tri.get("risk_tier")),
+                    "triage_escalation_strength": _csv_field(tri.get("escalation_strength")),
                 }
             )
             out_rows.append(merged)

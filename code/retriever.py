@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any
 
 
-INDEX_VERSION = 4
+INDEX_VERSION = 5
+
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover
+    np = None  # type: ignore
 
 try:
     from rank_bm25 import BM25Okapi
@@ -31,11 +36,44 @@ try:
         DEFAULT_DOMAIN_HINT_BOOST,
         HYBRID_BM25_WEIGHT,
         HYBRID_OVERLAP_WEIGHT,
+        HYBRID_SEMANTIC_WEIGHT,
+        SEMANTIC_HASH_BUCKETS,
+        SEMANTIC_HASH_DIM,
     )
 except ImportError:  # pragma: no cover
     CHUNK_BODY_MAX_CHARS, CHUNK_SPLIT_OVERLAP_STRIDE = 2000, 260
-    HYBRID_BM25_WEIGHT, HYBRID_OVERLAP_WEIGHT = 0.64, 0.36
+    HYBRID_BM25_WEIGHT, HYBRID_OVERLAP_WEIGHT = 0.52, 0.30
+    HYBRID_SEMANTIC_WEIGHT = 0.18
+    SEMANTIC_HASH_DIM, SEMANTIC_HASH_BUCKETS = 256, 4096
     DEFAULT_DOMAIN_HINT_BOOST = 1.38
+
+_PROJ_CACHE: dict[tuple[int, int], Any] = {}
+
+
+def _bucket_index(token: str, n_buckets: int) -> int:
+    digest = hashlib.blake2b(token.lower().encode("utf-8", errors="replace"), digest_size=8).digest()
+    return int.from_bytes(digest, "little") % n_buckets
+
+
+def _projection_matrix(dim: int, buckets: int) -> Any:
+    if np is None:
+        raise RuntimeError("numpy required for semantic retrieval")
+    key = (dim, buckets)
+    if key not in _PROJ_CACHE:
+        rng = np.random.default_rng(4242 + dim * 17 + buckets * 3)
+        _PROJ_CACHE[key] = (rng.standard_normal((dim, buckets)).astype(np.float32) * (1.0 / np.sqrt(buckets)))
+    return _PROJ_CACHE[key]
+
+
+def _embed_tokens(tokens: list[str], dim: int, buckets: int) -> Any:
+    if np is None:
+        return None
+    P = _projection_matrix(dim, buckets)
+    acc = np.zeros(dim, dtype=np.float32)
+    for t in tokens:
+        acc += P[:, _bucket_index(t, buckets)]
+    n = float(np.linalg.norm(acc))
+    return acc / n if n > 1e-8 else acc
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9/+]+", re.I)
@@ -192,7 +230,10 @@ def load_chunks(data_root: Path) -> list[Chunk]:
 def compute_corpus_fingerprint(data_root: Path) -> str:
     """Stable hash of corpus files + distilled FAQ overlay (invalidates cache on change)."""
     h = hashlib.sha256()
-    h.update(f"index_v={INDEX_VERSION}|algo=bm25_overlap_fusion\n".encode())
+    h.update(
+        f"index_v={INDEX_VERSION}|algo=bm25_overlap_sem|sw={HYBRID_SEMANTIC_WEIGHT}|"
+        f"dim={SEMANTIC_HASH_DIM}|bk={SEMANTIC_HASH_BUCKETS}\n".encode()
+    )
     for domain in ("hackerrank", "claude", "visa"):
         root = data_root / domain
         if not root.exists():
@@ -268,7 +309,26 @@ class CorpusRetriever:
         self.chunks: list[Chunk] = []
         self._bm25: BM25Okapi | None = None
         self._tokenized: list[list[str]] = []
+        self._semantic_mat: Any = None
+        self._semantic_materialized = False
         self.last_index_event: str = "uninitialized"
+
+    def _materialize_semantic_matrix(self) -> None:
+        if self._semantic_materialized:
+            return
+        self._semantic_materialized = True
+        if (
+            np is None
+            or HYBRID_SEMANTIC_WEIGHT <= 1e-9
+            or not self._tokenized
+        ):
+            self._semantic_mat = None
+            return
+        dim, buckets = SEMANTIC_HASH_DIM, SEMANTIC_HASH_BUCKETS
+        rows: list[Any] = []
+        for doc in self._tokenized:
+            rows.append(_embed_tokens(doc, dim, buckets))
+        self._semantic_mat = np.stack(rows, axis=0)
 
     def ensure_built(self) -> None:
         if self._bm25 is not None or (self._tokenized and not BM25Okapi):
@@ -312,6 +372,7 @@ class CorpusRetriever:
         domain_boost: float | None = None,
     ) -> tuple[list[tuple[Chunk, float]], dict[str, float]]:
         self.ensure_built()
+        self._materialize_semantic_matrix()
         qtok = tokenize(query)
         stats: dict[str, float] = {"query_tokens": float(len(qtok))}
 
@@ -343,11 +404,24 @@ class CorpusRetriever:
         mx_b = max((raw_lex[i] for i in cand_idx), default=1.0) or 1.0
         mx_o = max((overlap_scores[i] for i in cand_idx), default=1.0) or 1.0
 
+        sem_all: Any = None
+        sem_window: list[float] | None = None
+        mx_s = 1.0
+        if self._semantic_mat is not None and HYBRID_SEMANTIC_WEIGHT > 1e-9 and np is not None:
+            q_emb = _embed_tokens(qtok, SEMANTIC_HASH_DIM, SEMANTIC_HASH_BUCKETS)
+            sem_all = self._semantic_mat @ q_emb
+            sem_window = [max(0.0, float(sem_all[i])) for i in cand_idx]
+            mx_s = max(sem_window, default=1.0) or 1.0
+
         fused: dict[int, float] = {}
-        for i in cand_idx:
+        for j, i in enumerate(cand_idx):
             b = raw_lex[i] / mx_b
             o = overlap_scores[i] / mx_o
-            fused[i] = HYBRID_BM25_WEIGHT * b + HYBRID_OVERLAP_WEIGHT * o
+            piece = HYBRID_BM25_WEIGHT * b + HYBRID_OVERLAP_WEIGHT * o
+            if sem_window is not None:
+                sem_n = sem_window[j] / mx_s
+                piece += HYBRID_SEMANTIC_WEIGHT * sem_n
+            fused[i] = piece
 
         reranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)[:top_k]
         out = [(self.chunks[i], s) for i, s in reranked]
@@ -363,6 +437,17 @@ class CorpusRetriever:
                 else 0.0,
             }
         )
+        if sem_all is not None and reranked:
+            i0 = reranked[0][0]
+            s0 = max(0.0, float(sem_all[i0]))
+            s1 = max(0.0, float(sem_all[reranked[1][0]])) if len(reranked) > 1 else 0.0
+            stats["semantic_top1"] = float(s0)
+            stats["semantic_margin"] = float((s0 - s1) / (s0 + 1e-6)) if s0 else 0.0
+            stats["semantic_enabled"] = 1.0
+        else:
+            stats["semantic_top1"] = 0.0
+            stats["semantic_margin"] = 0.0
+            stats["semantic_enabled"] = 0.0
         return out, stats
 
 

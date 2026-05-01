@@ -15,9 +15,12 @@ DEFAULT_LOG = REPO_ROOT / "logs" / "log.txt"
 LOG_FILE = Path(os.environ.get("SUPPORT_AGENT_LOG", str(DEFAULT_LOG)))
 CACHE_DIR = Path(os.environ.get("SUPPORT_AGENT_CACHE_DIR", str(REPO_ROOT / "logs")))
 
-# Retrieval fusion: lexical BM25 weights + deterministic token overlap (cheap “second signal”).
-HYBRID_BM25_WEIGHT = float(os.environ.get("SUPPORT_AGENT_HYBRID_BM25", "0.64"))
-HYBRID_OVERLAP_WEIGHT = float(os.environ.get("SUPPORT_AGENT_HYBRID_OVERLAP", "0.36"))
+# Retrieval fusion: BM25 + token overlap + deterministic semantic projection (no extra model deps).
+HYBRID_BM25_WEIGHT = float(os.environ.get("SUPPORT_AGENT_HYBRID_BM25", "0.52"))
+HYBRID_OVERLAP_WEIGHT = float(os.environ.get("SUPPORT_AGENT_HYBRID_OVERLAP", "0.30"))
+HYBRID_SEMANTIC_WEIGHT = float(os.environ.get("SUPPORT_AGENT_HYBRID_SEMANTIC", "0.18"))
+SEMANTIC_HASH_DIM = int(os.environ.get("SUPPORT_AGENT_SEMANTIC_DIM", "256"))
+SEMANTIC_HASH_BUCKETS = int(os.environ.get("SUPPORT_AGENT_SEMANTIC_BUCKETS", "4096"))
 
 # LLM
 LLM_TEMPERATURE = float(os.environ.get("SUPPORT_AGENT_LLM_TEMPERATURE", "0"))
@@ -56,3 +59,11 @@ CHUNK_SPLIT_OVERLAP_STRIDE = int(os.environ.get("SUPPORT_AGENT_CHUNK_OVERLAP_STR
 # Domain-conditioned score multiplier in retriever.search (confirmed company ⇒ stronger bias)
 DEFAULT_DOMAIN_HINT_BOOST = float(os.environ.get("SUPPORT_AGENT_DOMAIN_HINT_BOOST", "1.38"))
 DEFAULT_DOMAIN_CONFIRMED_BOOST = float(os.environ.get("SUPPORT_AGENT_DOMAIN_CONFIRMED_BOOST", "3.1"))
+
+# When true, scan reply body URLs against allowlist / tel: / issuer-safe hosts after citations validate.
+GROUNDING_SCAN_RESPONSE_URLS = os.environ.get("SUPPORT_AGENT_GROUND_BODY_URLS", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)

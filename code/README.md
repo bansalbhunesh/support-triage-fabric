@@ -137,8 +137,11 @@ export SUPPORT_AGENT_LLM_USER_MAX_CHARS=26000   # Cap subject/issue in synthesis
 export SUPPORT_AGENT_LLM_MAX_TOKENS=1200
 export SUPPORT_AGENT_DOMAIN_HINT_BOOST=1.38     # lexical retriever multiplier when guessing domain keywords
 export SUPPORT_AGENT_DOMAIN_CONFIRMED_BOOST=3.1 # multiplier when COMPANY column pins the org
-export SUPPORT_AGENT_HYBRID_BM25=0.64           # lexical fusion BM25 coefficient (paired with HYBRID_OVERLAP)
-export SUPPORT_AGENT_HYBRID_OVERLAP=0.36
+export SUPPORT_AGENT_HYBRID_BM25=0.52           # lexical + semantic fusion (paired with OVERLAP / SEMANTIC)
+export SUPPORT_AGENT_HYBRID_OVERLAP=0.30
+export SUPPORT_AGENT_HYBRID_SEMANTIC=0.18       # deterministic token projection (no embedding API)
+export SUPPORT_AGENT_SEMANTIC_DIM=256
+export SUPPORT_AGENT_GROUND_BODY_URLS=1       # scan reply body for http(s) / tel: / mailto: after citations
 # export SUPPORT_AGENT_REBUILD_INDEX=1
 ```
 
@@ -167,18 +170,18 @@ python code/agent.py
 
 Artifacts:
 
-- Structured transcript: `logs/log.txt` (`RESULT`, `REASONING`, `SOURCES`, **`EXPLAIN`** lexical summary, **`BATCH_SUMMARY`** / **`LEGACY_MIX_SUMMARY`** after CSV runs).
+- Structured transcript: `logs/log.txt` (`RESULT`, `REASONING`, `SOURCES`, **`CONFIDENCE`** composite score + risk tier, **`EXPLAIN`** retrieval summary, **`BATCH_SUMMARY`** / **`LEGACY_MIX_SUMMARY`** after CSV runs).
 - Optional `trace` dict on programmatic dict outputs when `--trace` / `SUPPORT_AGENT_CLI_TRACE=1` (**never** written into official CSV columns).
 - **`--csv`** / **`--legacy-csv`**: terminal prints a compact histogram unless `--quiet`.
 
-Legacy harness (`--legacy-csv`) writes `triage_*` enrichment columns alongside originals.
+Legacy harness (`--legacy-csv`) writes `triage_*` enrichment columns alongside originals (includes `triage_risk_tier` and `triage_escalation_strength`: `hard` / `soft` / `operational` / `standard` / `none`).
 
 ---
 
 ## Evaluation checklist (pre-submit)
 
 1. `./support_tickets/output.csv` has **exactly** the required columns appended/updated (depending on ingest template)—never merges `trace` / debug internals.
-2. Run once with **`SUPPORT_AGENT_REBUILD_INDEX=1`** after changing `INDEX_VERSION`.
+2. Run once with **`SUPPORT_AGENT_REBUILD_INDEX=1`** after changing `INDEX_VERSION` (v5 adds deterministic semantic projection to retrieval fusion).
 3. Verify `logs/log.txt` shows `INDEX … cache_hit` on warm runs (latency story for judges).
 4. Spot-check a **blank row** CSV (should classify as deterministic invalid-handling guard, not crash).
 5. Confirm keys never appear in zipped `code/` folder.
