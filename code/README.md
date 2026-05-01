@@ -194,6 +194,7 @@ Legacy harness (`--legacy-csv`) writes `triage_*` enrichment columns alongside o
 3. Verify `logs/log.txt` shows `INDEX … cache_hit` on warm runs (latency story for judges).
 4. Spot-check a **blank row** CSV (should classify as deterministic invalid-handling guard, not crash).
 5. Confirm keys never appear in zipped `code/` folder.
+6. If using hosted dense embeddings, spot-check logs: query-time embed failures surface as `dense_query_error` / `dense_q_err` and triage still completes (lexical fallback).
 
 ---
 
@@ -205,6 +206,10 @@ Legacy harness (`--legacy-csv`) writes `triage_*` enrichment columns alongside o
 | `keyword_overlap_*` in telemetry | Rank-BM25 not installed → slower fallback overlaps only |
 | Stale retrieval after corpus edits | `SUPPORT_AGENT_REBUILD_INDEX=1` |
 | Gemini `no_candidates` | Safety filter / empty generation — escalate path still safe |
+| `dense_build_failed:` in `INDEX` log | Corpus dense index build failed; text after colon is a truncated API / import error |
+| `dense_query_error` / `dense_q_err` in `CONFIDENCE` | Per-ticket query embedding failed; fusion fell back to lexical + hash semantic (no crash) |
+| `OpenAI embeddings HTTP` / `not JSON` / `count mismatch` | API key, quota, proxy, or non-JSON response; body snippet included when HTTP fails |
+| `Gemini embeddings failed (task_type=…)` | Quota, model id (`SUPPORT_AGENT_GEMINI_EMBEDDING_MODEL`), or API error; wrapped cause after colon |
 | Windows path issues | Use absolute POSIX-style paths inside Git Bash |
 
 ---

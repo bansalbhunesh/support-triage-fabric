@@ -157,9 +157,24 @@ def _openai_embed_texts(texts: list[str]) -> Any:
             if isinstance(reason, BaseException):
                 reason = repr(reason)
             raise RuntimeError(f"OpenAI embeddings network error: {reason}") from e
-        data = json.loads(raw)
-        for item in sorted(data.get("data", []), key=lambda x: int(x.get("index", 0))):
-            all_rows.append(item["embedding"])
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"OpenAI embeddings response not JSON ({len(raw)} bytes): {raw[:480]!r}"
+            ) from e
+        chunk = data.get("data")
+        if not isinstance(chunk, list) or not chunk:
+            raise RuntimeError(f"OpenAI embeddings missing or empty data[]: {raw[:600]!r}")
+        for item in sorted(chunk, key=lambda x: int(x.get("index", 0))):
+            try:
+                all_rows.append(item["embedding"])
+            except (KeyError, TypeError) as e:
+                raise RuntimeError(
+                    f"OpenAI embeddings item missing embedding: {repr(item)[:500]}"
+                ) from e
+    if len(all_rows) != len(texts):
+        raise RuntimeError(f"OpenAI embeddings count mismatch: expected {len(texts)}, got {len(all_rows)}")
     mat = np.asarray(all_rows, dtype=np.float32)
     return _l2_normalize_rows(mat)
 
@@ -196,28 +211,34 @@ def _gemini_embed_texts(texts: list[str], *, task_type: str = "retrieval_documen
     genai.configure(api_key=GOOGLE_API_KEY)
     bs = max(1, min(EMBEDDING_BATCH, 100))
     rows: list[Any] = []
-    for i in range(0, len(texts), bs):
-        batch = texts[i : i + bs]
-        r = genai.embed_content(
-            model=GEMINI_EMBEDDING_MODEL,
-            content=batch,
-            task_type=task_type,
-        )
-        parsed = _parse_gemini_embedding_batch(r)
-        if len(parsed) == len(batch):
-            rows.extend(parsed)
-            continue
-        for t in batch:
-            r1 = genai.embed_content(
+    try:
+        for i in range(0, len(texts), bs):
+            batch = texts[i : i + bs]
+            r = genai.embed_content(
                 model=GEMINI_EMBEDDING_MODEL,
-                content=t,
+                content=batch,
                 task_type=task_type,
             )
-            one = _parse_gemini_embedding_batch(r1 if isinstance(r1, dict) else {})
-            if not one and r1 is not None and getattr(r1, "embedding", None) is not None:
-                one = [np.asarray(r1.embedding, dtype=np.float32)]
-            if one:
-                rows.append(one[0])
+            parsed = _parse_gemini_embedding_batch(r)
+            if len(parsed) == len(batch):
+                rows.extend(parsed)
+                continue
+            for t in batch:
+                r1 = genai.embed_content(
+                    model=GEMINI_EMBEDDING_MODEL,
+                    content=t,
+                    task_type=task_type,
+                )
+                one = _parse_gemini_embedding_batch(r1 if isinstance(r1, dict) else {})
+                if not one and r1 is not None and getattr(r1, "embedding", None) is not None:
+                    one = [np.asarray(r1.embedding, dtype=np.float32)]
+                if one:
+                    rows.append(one[0])
+    except Exception as e:
+        raise RuntimeError(
+            f"Gemini embeddings failed (task_type={task_type}): "
+            f"{_dense_build_failure_detail(e, max_len=280)}"
+        ) from e
     if not rows:
         raise RuntimeError("Gemini returned no embeddings")
     mat = np.stack(rows, axis=0)

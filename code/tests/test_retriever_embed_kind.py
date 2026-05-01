@@ -81,6 +81,106 @@ class TestEmbedKind(unittest.TestCase):
         self.assertIn("401", str(ctx.exception))
         self.assertIn("Incorrect API key", str(ctx.exception))
 
+    def test_openai_embed_urllib_error(self):
+        import importlib
+
+        import config as cfg
+        import retriever as ret
+
+        os.environ["SUPPORT_AGENT_EMBEDDING_BACKEND"] = "openai"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        importlib.reload(cfg)
+        importlib.reload(ret)
+        with mock.patch.object(
+            urllib.request, "urlopen", side_effect=urllib.error.URLError("DNS failure")
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                ret._openai_embed_texts(["a"])
+        self.assertIn("network error", str(ctx.exception))
+        self.assertIn("DNS", str(ctx.exception))
+
+    def test_openai_embed_invalid_json(self):
+        import importlib
+
+        import config as cfg
+        import retriever as ret
+
+        os.environ["SUPPORT_AGENT_EMBEDDING_BACKEND"] = "openai"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        importlib.reload(cfg)
+        importlib.reload(ret)
+
+        class R:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return None
+
+            def read(self):
+                return b"not { json"
+
+        with mock.patch.object(urllib.request, "urlopen", return_value=R()):
+            with self.assertRaises(RuntimeError) as ctx:
+                ret._openai_embed_texts(["a"])
+        self.assertIn("not JSON", str(ctx.exception))
+
+    def test_openai_embed_empty_data(self):
+        import importlib
+        import json
+
+        import config as cfg
+        import retriever as ret
+
+        os.environ["SUPPORT_AGENT_EMBEDDING_BACKEND"] = "openai"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        importlib.reload(cfg)
+        importlib.reload(ret)
+        payload = json.dumps({"data": []}).encode()
+
+        class R:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return None
+
+            def read(self):
+                return payload
+
+        with mock.patch.object(urllib.request, "urlopen", return_value=R()):
+            with self.assertRaises(RuntimeError) as ctx:
+                ret._openai_embed_texts(["a"])
+        self.assertIn("empty data", str(ctx.exception))
+
+    def test_openai_embed_count_mismatch(self):
+        import importlib
+        import json
+
+        import config as cfg
+        import retriever as ret
+
+        os.environ["SUPPORT_AGENT_EMBEDDING_BACKEND"] = "openai"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        importlib.reload(cfg)
+        importlib.reload(ret)
+        payload = json.dumps({"data": [{"index": 0, "embedding": [0.0, 1.0, 0.0]}]}).encode()
+
+        class R:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return None
+
+            def read(self):
+                return payload
+
+        with mock.patch.object(urllib.request, "urlopen", return_value=R()):
+            with self.assertRaises(RuntimeError) as ctx:
+                ret._openai_embed_texts(["one", "two"])
+        self.assertIn("count mismatch", str(ctx.exception))
+
     def test_dense_build_failure_detail(self):
         import retriever as ret
 
