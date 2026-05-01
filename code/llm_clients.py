@@ -1,0 +1,131 @@
+"""
+Unified Anthropic Claude vs Google Gemini client for corpus-grounded triage synthesis.
+Reads keys only from the environment — never bundle secrets.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from typing import Callable, Literal
+
+import anthropic
+
+from config import GEMINI_MODEL, LLM_BACKEND, LLM_MAX_TOKENS, LLM_TEMPERATURE, MODEL
+
+LogFn = Callable[[str, str], None]
+
+
+def _google_key_live() -> str:
+    return os.environ.get("GOOGLE_API_KEY", "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+
+
+@dataclass(frozen=True)
+class AgentLlm:
+    """Exactly one synthesis backend is active."""
+
+    backend: Literal["anthropic", "google"]
+    model_name: str
+    anthropic_client: anthropic.Anthropic | None = None
+    gemini_api_key: str = ""
+
+    @property
+    def label(self) -> str:
+        return f"{self.backend}:{self.model_name}"
+
+
+def build_agent_llm() -> AgentLlm | None:
+    anth_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    g_key = _google_key_live()
+
+    bk_raw = LLM_BACKEND
+    if bk_raw == "anthropic":
+        if not anth_key:
+            raise RuntimeError(
+                "SUPPORT_AGENT_LLM_BACKEND=anthropic requires ANTHROPIC_API_KEY in the environment"
+            )
+        return AgentLlm(
+            "anthropic",
+            MODEL,
+            anthropic_client=anthropic.Anthropic(api_key=anth_key),
+            gemini_api_key="",
+        )
+    if bk_raw == "google":
+        if not g_key:
+            raise RuntimeError(
+                "SUPPORT_AGENT_LLM_BACKEND=google requires GOOGLE_API_KEY or GEMINI_API_KEY"
+            )
+        return AgentLlm("google", GEMINI_MODEL, anthropic_client=None, gemini_api_key=g_key)
+
+    # auto
+    if anth_key:
+        return AgentLlm(
+            "anthropic",
+            MODEL,
+            anthropic_client=anthropic.Anthropic(api_key=anth_key),
+            gemini_api_key="",
+        )
+    if g_key:
+        return AgentLlm("google", GEMINI_MODEL, anthropic_client=None, gemini_api_key=g_key)
+    return None
+
+
+def synthesize_json_turn(agent: AgentLlm, system: str, user: str, log: LogFn) -> str:
+    """Return raw model output (prefer JSON-only)."""
+    if agent.backend == "anthropic":
+        assert agent.anthropic_client is not None
+        msg = agent.anthropic_client.messages.create(
+            model=agent.model_name,
+            max_tokens=LLM_MAX_TOKENS,
+            temperature=LLM_TEMPERATURE,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        return msg.content[0].text.strip()
+
+    return _synthesize_gemini_json(agent.gemini_api_key, agent.model_name, system, user, log)
+
+
+def _synthesize_gemini_json(
+    api_key: str,
+    model_id: str,
+    system: str,
+    user: str,
+    log: LogFn,
+) -> str:
+    try:
+        import google.generativeai as genai  # lazy: optional dependency
+    except ImportError as e:  # pragma: no cover
+        raise RuntimeError(
+            "Google backend requires `pip install google-generativeai` (see code/requirements.txt)."
+        ) from e
+
+    genai.configure(api_key=api_key)
+    gm = genai.GenerativeModel(
+        model_id,
+        system_instruction=system.strip()[:31_900] if system.strip() else None,
+    )
+
+    cfg = genai.types.GenerationConfig(
+        candidate_count=1,
+        temperature=LLM_TEMPERATURE,
+        max_output_tokens=LLM_MAX_TOKENS,
+        response_mime_type="application/json",
+    )
+
+    resp = gm.generate_content(user, generation_config=cfg)
+    if not resp.candidates:
+        fb = getattr(resp, "prompt_feedback", None)
+        log("GEMINI_BLOCK", repr(fb) if fb else "no_candidates")
+        raise RuntimeError("Gemini returned no candidates (blocked or filtered).")
+
+    part = getattr(resp, "text", None)
+    if isinstance(part, str) and part.strip():
+        return part.strip()
+
+    if resp.candidates[0].content.parts:
+        t = "".join(getattr(p, "text", "") for p in resp.candidates[0].content.parts)
+        return t.strip()
+
+    log("GEMINI_EMPTY", repr(resp.prompt_feedback))
+    raise RuntimeError("Gemini candidate had no textual content.")
