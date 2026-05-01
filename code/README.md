@@ -135,6 +135,10 @@ export SUPPORT_AGENT_GEMINI_MODEL="gemini-2.0-flash"
 export SUPPORT_AGENT_HTTP_TIMEOUT_S=120          # Anthropic SDK + Gemini REST (google-generativeai)
 export SUPPORT_AGENT_LLM_USER_MAX_CHARS=26000   # Cap subject/issue in synthesis user envelope only
 export SUPPORT_AGENT_LLM_MAX_TOKENS=1200
+export SUPPORT_AGENT_DOMAIN_HINT_BOOST=1.38     # lexical retriever multiplier when guessing domain keywords
+export SUPPORT_AGENT_DOMAIN_CONFIRMED_BOOST=3.1 # multiplier when COMPANY column pins the org
+export SUPPORT_AGENT_HYBRID_BM25=0.64           # lexical fusion BM25 coefficient (paired with HYBRID_OVERLAP)
+export SUPPORT_AGENT_HYBRID_OVERLAP=0.36
 # export SUPPORT_AGENT_REBUILD_INDEX=1
 ```
 

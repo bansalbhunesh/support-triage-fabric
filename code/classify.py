@@ -48,7 +48,16 @@ DOMAIN_KW: dict[str, list[str]] = {
         "dispute",
         "card declined",
         "merchant minimum",
+        "minimum",
+        "spend requirement",
+        "block",
+        "blocké",
+        "bloqué",
+        "bloquee",
         "Issuer",
+        "issuing bank",
+        "lost card",
+        "stolen",
     ],
 }
 
@@ -76,7 +85,7 @@ def detect_domain_scores(text: str) -> tuple[dict[str, int], str | None]:
     second_s = ranked[1][1] if len(ranked) > 1 else 0
     if best_s == 0:
         return scores, None
-    ambiguous = best_s > 0 and (best_s - second_s) <= 1 and second_s > 0
+    ambiguous = best_s > 0 and (best_s - second_s) <= 2 and second_s > 0
     note = "ambiguous_top_domains" if ambiguous else None
     return scores, note
 
@@ -95,12 +104,37 @@ def infer_domain(company: str | None, issue: str, subject: str) -> tuple[str, di
 
 def classify_request_type(issue: str, subject: str) -> str:
     """Map to hackathon enum: product_issue | feature_request | bug | invalid."""
-    blob = (issue + "\n" + subject).lower()
+    raw = (issue + "\n" + subject).strip()
+    blob = raw.lower()
 
     hostile = re.search(
         r"(delete all files|rm -rf|format the disk|give me the code to wipe|wipe the server)", blob
     )
     if hostile:
+        return "invalid"
+
+    if len(blob.split()) <= 8 and blob.strip().rstrip(",.!😀😊👍").lower() in (
+        "thanks",
+        "thank you",
+        "thx",
+        "thanks!",
+        "ty",
+        "ok",
+        "okay",
+        "sure",
+        "great",
+        "received",
+        "got it",
+        "thank you,",
+        "thanks,",
+    ):
+        return "invalid"
+
+    if re.search(
+        r"\b(who\s+(is|was|played))\b.+"
+        r"\b(actor|celebrity|movie|oscar)\b|\b(movie plot|celebrity gossip)\b",
+        blob,
+    ):
         return "invalid"
 
     if re.search(
@@ -109,7 +143,15 @@ def classify_request_type(issue: str, subject: str) -> str:
     ) or re.search(
         r"\b(feature request|new capability|enhancement request|extend inactivity|longer timeout|bit more time)\b",
         blob,
-    ):
+    ) or re.search(
+        r"\b(extend|increase|adjust|lengthen)\b[\s\S]{0,48}\b(inactivity|session|idle)\b[\s\S]{0,32}\b"
+        r"(timeout|time[- ]?out)\b",
+        blob,
+    ) or re.search(
+        r"\b(can we|please|would like to)\b[\s\S]{0,32}\b(extend|increase)\b[\s\S]{0,40}\bsession\b[\s\S]{0,36}\b"
+        r"(minutes?|hours?)\b",
+        blob,
+    ) or re.search(r"\bpause\b[\s\S]{0,52}\bsubscription\b|\bsubscription\b[\s\S]{0,52}\bpause\b", blob):
         return "feature_request"
 
     bug_signals = [
@@ -158,7 +200,9 @@ def infer_product_area(domain: str, top_chunks: Iterable[Chunk]) -> str:
 
 
 _NON_ACCESS_USES = re.compile(
-    r"\b(test link|assessment link|public link|invite link|error when accessing|cannot access the test|accessing the test|link is not working)\b",
+    r"\b(test link|assessment link|public link|invite link|invite url|candidate invite|"
+    r"invite page|broken invite|public test link|error when accessing|cannot access the test|"
+    r"accessing the test|link is not working)\b",
     re.I,
 )
 
@@ -170,11 +214,12 @@ def legacy_request_label(issue: str, subject: str, domain: str) -> str:
     """
     tl = (issue + "\n" + subject).lower()
 
-    if domain == "visa" and (
-        "stolen" in tl
-        or "lost card" in tl
-        or re.search(r"\bcard was stolen\b", tl)
-        or re.search(r"\bcard\s+got\s+lost\b|\bcard\s+lost\b", tl)
+    if domain in {"visa", "unknown"} and re.search(
+        r"\b(card|carte)\b.{0,32}\b(stolen|vol[eé]|lost|lost my|picked|pickpocket|misplaced)|"
+        r"\b(stolen|lost)\b.{0,24}\b(card|carte)|\bmisplaced\b.{0,20}\bcard\b|"
+        r"\bcarte\b.{0,36}\b(perdu|vol[eé])\b|\bpick[- ]pocket\b",
+        tl,
+        re.I,
     ):
         return "Lost or Stolen Card"
 
@@ -193,7 +238,9 @@ def legacy_request_label(issue: str, subject: str, domain: str) -> str:
         return "Assessment / Access or Link Troubleshooting"
 
     if domain == "hackerrank" and any(w in tl for w in ("password", "forgot password")):
-        return "Account Access / Password Reset"
+        # Avoid tagging assessment / invite link breakage as generic password-reset triage.
+        if not link_or_test_issue:
+            return "Account Access / Password Reset"
     if (
         domain == "hackerrank"
         and ("log in" in tl or "login" in tl or "can't access my account" in tl or "cannot access my account" in tl)

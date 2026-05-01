@@ -52,3 +52,7 @@ QUERY_MAX_CHARS = int(os.environ.get("SUPPORT_AGENT_QUERY_MAX_CHARS", "32000"))
 # Retrieval chunk sizing (overlap stride = max_len - CHUNK_SPLIT_OVERLAP_STRIDE)
 CHUNK_BODY_MAX_CHARS = int(os.environ.get("SUPPORT_AGENT_CHUNK_MAX_CHARS", "2000"))
 CHUNK_SPLIT_OVERLAP_STRIDE = int(os.environ.get("SUPPORT_AGENT_CHUNK_OVERLAP_STRIDE", "260"))
+
+# Domain-conditioned score multiplier in retriever.search (confirmed company ⇒ stronger bias)
+DEFAULT_DOMAIN_HINT_BOOST = float(os.environ.get("SUPPORT_AGENT_DOMAIN_HINT_BOOST", "1.38"))
+DEFAULT_DOMAIN_CONFIRMED_BOOST = float(os.environ.get("SUPPORT_AGENT_DOMAIN_CONFIRMED_BOOST", "3.1"))

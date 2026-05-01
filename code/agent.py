@@ -23,12 +23,14 @@ from classify import (
     infer_domain,
     infer_product_area,
     legacy_request_label,
+    normalize_company,
 )
 from config import (
     BATCH_SLEEP_S,
     CACHE_DIR,
     CLI_EMBED_TRACE,
     DATA_DIR,
+    DEFAULT_DOMAIN_CONFIRMED_BOOST,
     LOG_FILE,
     LLM_USER_BLOB_MAX_CHARS,
     QUERY_MAX_CHARS,
@@ -84,6 +86,63 @@ def _truncate_query_blob(blob: str) -> str:
     if len(blob) <= QUERY_MAX_CHARS:
         return blob
     return blob[: max(512, QUERY_MAX_CHARS - 20)].rstrip() + "\n…[truncated]"
+
+
+def _vague_ticket_text(issue: str, subject: str) -> tuple[bool, str]:
+    """True if wording is vague / underspecified."""
+    text = f"{issue}\n{subject}".strip()
+    if len(text) > 380:
+        return False, text
+    tl = text.lower()
+    vague_hit = bool(
+        re.search(
+            r"\b(not\s+working|doesn'?t\s+work|does\s+not\s+work|isn'?t\s+working|nothing\s+works|broken|errors?|"
+            r"something'?s\s+wrong|won'?t\s+load|loads?\s+forever|spinning|stuck\s+loading|\bneed\s+help\b)\b",
+            tl,
+            re.I,
+        )
+    )
+    if not vague_hit:
+        return False, text
+    if re.search(
+        r"\b(hackerrank|hacker\s*rank|anthropic|claude\.ai|\bvisa\b|\bmerchant\b|\bIssuer\b|\bcharging\b|\bassignment\b|\bscreen\b|\binvite\b|"
+        r"\bcoding\s+challenge\b|\bsubscription\b|\bsso\b|\bworkspace\b|certificate|\bskills verification\b|\btest\s+link\b|\blink\b.+?\bbroken\b|"
+        r"\bcandidate\b|\brecruiter\b|\bhire\b|\blogin\b|\bpassword\b|\baccount\b|\bLTI\b)\b",
+        tl,
+        re.I,
+    ):
+        return False, text
+    return True, text
+
+
+def underspecified_escalate_signal(
+    issue: str,
+    subject: str,
+    domain_keyed: str,
+    dom_scores: dict[str, int],
+    effective_domain: str,
+    rag_ok: bool,
+    retrieval_esc: bool,
+) -> tuple[bool, str]:
+    """Unanchored vague issues — avoid confident snippet-only replies."""
+    if domain_keyed != "unknown":
+        return False, ""
+    if max(dom_scores.values(), default=0) > 0:
+        return False, ""
+    vague, _ = _vague_ticket_text(issue, subject)
+    if not vague:
+        return False, ""
+    if effective_domain != "unknown" and rag_ok and not retrieval_esc:
+        return False, ""
+    return True, "underspecified_vague_ticket_no_keyword_product_anchor"
+
+
+def _sanitize_product_area_text(pa: str) -> str:
+    """Keep LLM `product_area` compact for downstream CSV/UI."""
+    s = " ".join((pa or "").split())
+    if len(s) > 420:
+        s = s[:417].rstrip() + "…"
+    return s
 
 
 def _trim_llm_user_content(subject: str, issue: str, max_chars: int) -> tuple[str, str]:
@@ -300,9 +359,14 @@ def _local_compose_response(domain: str, ranked: list[tuple[Any, float]]) -> str
             "Thanks for reaching out. We could not automatically match this request to a specific help article. "
             f"{escalation_message_for(domain if domain != 'unknown' else 'hackerrank')}"
         )
+    intro = (
+        "Here is the closest documentation match we retrieved. If it does not line up with your exact situation "
+        "(symptoms differ, URLs differ, or you already tried these steps), please escalate via the links below "
+        "so support can troubleshoot with account details.\n\n"
+    )
     primary, _ = ranked[0]
     ptext = _snippet_from_chunk(primary)
-    parts = [ptext]
+    parts = [intro + ptext]
     if len(ranked) > 1:
         sec, _ = ranked[1]
         st = _snippet_from_chunk(sec)
@@ -377,6 +441,32 @@ def _compose_support_query(issue: str, subject: str, req_type: str) -> str:
         boosts.append(
             "PLATFORM STATUS KNOWN OUTAGE SUBMISSION FAILURES SYSTEM HEALTH MAINTENANCE"
         )
+    if re.search(r"\b(lti|learning tools interoperability|schoology|canvas|blackboard|moodle)\b", bundle, re.I):
+        boosts.append(
+            "EDU LTI INTEGRATION STUDENT LOGIN CANVAS LMS BLACKBOARD ASSIGNMENT SINGLE SIGN ON"
+        )
+    if re.search(
+        r"\b(resume\b|resume builder|\bcv\b|profile completeness|skills profile|skills verification)\b",
+        bundle,
+        re.I,
+    ):
+        boosts.append("PROFILE RESUME SETTINGS CANDIDATE PORTAL APPLY TAB SKILLUP COMMUNITY SETTINGS")
+    if re.search(r"\bpause\b.{0,60}\bsubscription|\bsubscription\b.{0,60}\bpause|cancell?ation\b|downgrade\b", bundle, re.I):
+        boosts.append("BILLING SUBSCRIPTION PLAN TEAM SEAT ADMIN WORKSPACE SETTINGS CANCEL CHANGE")
+    if re.search(
+        r"\b(certificate|credential|skills verification)\b.+?\b(name|incorrect|typo)|\bwrong name on\b",
+        bundle,
+        re.I,
+    ):
+        boosts.append("CERTIFICATE PROFILE NAME SETTINGS SUPPORT VERIFY SKILL BADGE EMAIL")
+    if re.search(
+        r"\b(test link|invite link|assessment link|public link|broken link|candidates can'?t\b|invite email)\b|\b(link|url)\b.{0,40}\b(not working|expires|expire|broken|spinning|loads)\b",
+        bundle,
+        re.I,
+    ):
+        boosts.append(
+            "TEST INVITE ARTICLES EMAIL DELIVERY SAFELIST FIREWALL PROXY BROWSER LOGIN ASSESSMENT ACCESS TOKEN"
+        )
 
     if not boosts:
         return core
@@ -440,11 +530,18 @@ def triage_with_llm(
 
 Output: JSON only — no markdown fences. Keys: status, product_area, response, justification, request_type, sources.
 
+Structured workflow (silent — apply before writing JSON; summarize only inside `justification`):
+1. Parse intent vs product (Screen vs Claude vs Visa) using SUBJECT/ISSUE and SOURCES headings.
+2. Cross-check SOURCES snippets; classify evidence as strong match, partial/gap, or mismatch.
+3. If mismatch or ambiguous → prefer `escalated` unless must_escalate already forces it.
+4. For `replied`, give step-level guidance anchored to citations; omit steps not evidenced.
+
 Roles:
 - status: "replied" only with strong SOURCES support; else "escalated".
 - sources: when status is "replied", list ≥1 URL copied exactly from a SOURCE line below.
-- response: warm, accurate; never invent fees, SLAs, jurisdiction, or contacts not in SOURCES (or ESCALATION_MESSAGE if escalating).
-- justification: 2–3 sentences on intent, evidence quality, and routing.
+- response: warm, accurate; acknowledge uncertainty indirectly when evidence is thin (without claiming verbatim policy not in SOURCES).
+- justification: 2–3 sentences on intent, evidence quality, ambiguity, routing.
+- product_area: concise (≤110 chars ideally) breadcrumb-like label, never a paragraph.
 - request_type: product_issue | feature_request | bug | invalid.
 
 Non-negotiables:
@@ -631,10 +728,13 @@ def triage_ticket(
 
     query_text = _truncate_query_blob(query_text)
 
+    dom_boost_kw = DEFAULT_DOMAIN_CONFIRMED_BOOST if normalize_company(company_s) else None
+
     retrieved, stats = retriever.search(
         query_text,
         domain_hint=None if domain_guess == "unknown" else domain_guess,
         top_k=8,
+        domain_boost=dom_boost_kw,
     )
 
     ranked = retrieved
@@ -645,16 +745,30 @@ def triage_ticket(
     risk = heuristic_risk_scan(issue or "", subject or "", effective_domain)
     corp_esc, corp_reason = corpus_escalation(issue or "", effective_domain)
 
-    must_esc = risk.escalate or corp_esc
+    must_esc = risk.escalate or corp_esc or uspec
     esc_reason_primary = "; ".join(
         x
-        for x in [(risk.reason if risk.escalate else ""), (corp_reason if corp_esc else "")]
+        for x in [
+            risk.reason if risk.escalate else "",
+            corp_reason if corp_esc else "",
+            uspec_reason if uspec else "",
+        ]
         if x
     )
 
     retrieval_esc, retr_reason = should_force_escalate_from_retrieval(stats, llm_sess is not None)
 
     rag_ok, rag_note = retrieval_confidence_ok(stats, llm_sess is not None)
+
+    uspec, uspec_reason = underspecified_escalate_signal(
+        issue or "",
+        subject or "",
+        domain_guess,
+        dom_scores,
+        effective_domain,
+        rag_ok,
+        retrieval_esc,
+    )
 
     chunks = [c for c, _ in ranked]
     urls = format_evidence_urls(chunks)
@@ -664,6 +778,7 @@ def triage_ticket(
         f"risk_tier={risk.tier}",
         f"risk_reason={risk.reason or 'none'}",
         f"policy_escalate={corp_esc}:{corp_reason}",
+        f"underspecified_guard={uspec}:{uspec_reason or 'clear'}",
         f"bm25_top1={stats.get('top1', 0):.4f}",
         f"bm25_margin={stats.get('margin', 0):.4f}",
         f"retrieval_escalate={retrieval_esc}:{retr_reason}",
@@ -792,7 +907,9 @@ def triage_ticket(
                             esc_reason_out = retr_reason or ""
                 out = {
                     "status": llm_st,
-                    "product_area": syn.get("product_area") or prod_area_llm_fallback,
+                    "product_area": _sanitize_product_area_text(
+                        str(syn.get("product_area") or prod_area_llm_fallback),
+                    ),
                     "response": syn.get("response", "").strip(),
                     "justification": (
                         syn.get("justification", "").strip() + "\n\n" + " ".join(justification_bits)
@@ -1068,7 +1185,7 @@ def interactive_mode(llm: AgentLlm | None) -> None:
 
                 prior = ""
                 if history:
-                    prior = "\n".join(history[-5:])
+                    prior = "\n".join(history[-14:])
 
                 tri = triage_ticket(str(idx), issue, "", "", llm, retriever, session_prior=prior)
 
@@ -1130,7 +1247,7 @@ def main(argv: list[str]) -> None:
             if len(aq) < 3:
                 raise SystemExit(_c("Usage: --csv <input.csv> [output.csv]", RED))
             in_csv = Path(aq[2]).expanduser()
-            out_csv = Path(aq[3]).expanduser() if len(aq) >= 4 else Path("support_tickets/output.csv")
+            out_csv = Path(aq[3]).expanduser() if len(aq) >= 4 else REPO_ROOT / "support_tickets/output.csv"
             log("BATCH", f"{in_csv} -> {out_csv}")
             process_csv(in_csv, out_csv, llm, quiet=RUNTIME_CLI["quiet"])
         elif len(aq) >= 4 and aq[1] == "--legacy-csv":

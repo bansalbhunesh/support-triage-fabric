@@ -25,9 +25,17 @@ except ImportError:  # pragma: no cover
 from corpus import SUPPORT_CORPUS
 
 try:
-    from config import CHUNK_BODY_MAX_CHARS, CHUNK_SPLIT_OVERLAP_STRIDE
+    from config import (
+        CHUNK_BODY_MAX_CHARS,
+        CHUNK_SPLIT_OVERLAP_STRIDE,
+        DEFAULT_DOMAIN_HINT_BOOST,
+        HYBRID_BM25_WEIGHT,
+        HYBRID_OVERLAP_WEIGHT,
+    )
 except ImportError:  # pragma: no cover
     CHUNK_BODY_MAX_CHARS, CHUNK_SPLIT_OVERLAP_STRIDE = 2000, 260
+    HYBRID_BM25_WEIGHT, HYBRID_OVERLAP_WEIGHT = 0.64, 0.36
+    DEFAULT_DOMAIN_HINT_BOOST = 1.38
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9/+]+", re.I)
@@ -301,7 +309,7 @@ class CorpusRetriever:
         query: str,
         domain_hint: str | None,
         top_k: int = 8,
-        domain_boost: float = 1.22,
+        domain_boost: float | None = None,
     ) -> tuple[list[tuple[Chunk, float]], dict[str, float]]:
         self.ensure_built()
         qtok = tokenize(query)
@@ -309,6 +317,8 @@ class CorpusRetriever:
 
         if not qtok or not self.chunks:
             return [], stats
+
+        boost = DEFAULT_DOMAIN_HINT_BOOST if domain_boost is None else domain_boost
 
         if self._bm25 is not None:
             scores = self._bm25.get_scores(qtok)
@@ -322,7 +332,7 @@ class CorpusRetriever:
         if domain_hint and domain_hint in {"hackerrank", "claude", "visa"}:
             for i, ch in enumerate(self.chunks):
                 if ch.domain == domain_hint:
-                    raw_lex[i] *= domain_boost
+                    raw_lex[i] *= boost
 
         qset = set(qtok)
         overlap_scores = [sum(1 for t in doc if t in qset) for doc in self._tokenized]

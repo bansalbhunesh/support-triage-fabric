@@ -45,8 +45,12 @@ _VISA_REFUND_DEMAND = re.compile(
 )
 _CERTIFICATE_FIX = re.compile(r"(name is incorrect on the certificate|update my name on the certificate)", re.I)
 _ACCOUNT_TAKEOVER_ADMIN = re.compile(
-    r"(not the workspace owner|not the workspace admin|not the admin).*(restore|lost).*(access|seat)|"
-    r"(restore|regain).*(access|seat).*(not the workspace owner|not the workspace admin)",
+    r"(not the workspace owner|not the workspace admin|not the admin).{0,220}?(restore|lost).{0,120}?(access|seat)|"
+    r"(restore|regain).{0,220}?(access|seat).{0,220}?(not the workspace owner|not the workspace admin)|"
+    r"\bit\s+admin\b[\s\S]{0,260}?\b(remov|revoked?|chang)\w*\b[\s\S]{0,140}?\b(seat|access|workspace|member)\b|"
+    r"\bmissing\b.+?\bseat\b[\s\S]{0,120}?\b(workspace|anthropic|claude)\b|"
+    r"\bsite\s+admin\b[\s\S]{0,200}?\b(revoked|removed)\b[\s\S]{0,120}?\baccess\b|"
+    r"\b(workspace|seat)\s+was\s+(removed|revoked)\b",
     re.I | re.DOTALL,
 )
 
@@ -150,6 +154,13 @@ def corpus_escalation(issue_text: str, domain: str) -> tuple[bool, str]:
         return False, ""
 
     tl = issue_text.lower()
+
+    if domain == "visa" and re.search(
+        r"\bcarte\b.+?\b(perdu[e]?|vol[eé][e]?)\b|\b(vol[eé][e]?|lost|stolen)\b.+?\bcarte\b|\bbloquée\b|\bblock\b",
+        tl,
+        re.I,
+    ):
+        return True, "lost_stolen_fraud_or_identity_event"
 
     if domain == "visa" and _visa_stolen_or_fraud(issue_text):
         return True, "lost_stolen_fraud_or_identity_event"
