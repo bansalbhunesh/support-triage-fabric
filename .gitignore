@@ -29,6 +29,12 @@ Thumbs.db
 # local logs / retrieval cache (regenerable)
 logs/
 *.pkl.gz
+
+# generated competition output (keep sample CSV tracked)
+support_tickets/output.csv
+
+# local data / caches the participant may create
+data/index/
 data/embeddings/
 *.sqlite
 *.db
