@@ -121,6 +121,7 @@ def _openai_embed_texts(texts: list[str]) -> Any:
     if not OPENAI_API_KEY or np is None:
         raise RuntimeError("OPENAI_API_KEY missing for openai embedding backend")
     import json
+    import urllib.error
     import urllib.request
 
     all_rows: list[list[float]] = []
@@ -133,8 +134,22 @@ def _openai_embed_texts(texts: list[str]) -> Any:
         req = urllib.request.Request(url, data=payload, method="POST")
         req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
         req.add_header("Content-Type", "application/json")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")[:1800]
+            except Exception:
+                err_body = ""
+            hint = err_body or getattr(e, "reason", "") or ""
+            raise RuntimeError(f"OpenAI embeddings HTTP {e.code}: {hint}") from e
+        except urllib.error.URLError as e:
+            reason = e.reason
+            if isinstance(reason, BaseException):
+                reason = repr(reason)
+            raise RuntimeError(f"OpenAI embeddings network error: {reason}") from e
+        data = json.loads(raw)
         for item in sorted(data.get("data", []), key=lambda x: int(x.get("index", 0))):
             all_rows.append(item["embedding"])
     mat = np.asarray(all_rows, dtype=np.float32)

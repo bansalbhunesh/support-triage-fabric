@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import os
 import pathlib
 import sys
 import unittest
+import urllib.error
+import urllib.request
+from unittest import mock
 
 _CODE = pathlib.Path(__file__).resolve().parents[1]
 if str(_CODE) not in sys.path:
@@ -55,6 +59,27 @@ class TestEmbedKind(unittest.TestCase):
         importlib.reload(cfg)
         importlib.reload(ret)
         self.assertEqual(ret._dense_embed_kind(), "openai")
+
+    def test_openai_embed_http_error_surfaces_body(self):
+        import importlib
+
+        import config as cfg
+        import retriever as ret
+
+        os.environ["SUPPORT_AGENT_EMBEDDING_BACKEND"] = "openai"
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        importlib.reload(cfg)
+        importlib.reload(ret)
+
+        fp = io.BytesIO(b'{"error":{"message":"Incorrect API key"}}')
+        err = urllib.error.HTTPError(
+            "https://api.openai.com/v1/embeddings", 401, "Unauthorized", {}, fp
+        )
+        with mock.patch.object(urllib.request, "urlopen", side_effect=err):
+            with self.assertRaises(RuntimeError) as ctx:
+                ret._openai_embed_texts(["hello"])
+        self.assertIn("401", str(ctx.exception))
+        self.assertIn("Incorrect API key", str(ctx.exception))
 
 
 if __name__ == "__main__":
