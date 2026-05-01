@@ -11,7 +11,14 @@ from typing import Callable, Literal
 
 import anthropic
 
-from config import GEMINI_MODEL, LLM_BACKEND, LLM_MAX_TOKENS, LLM_TEMPERATURE, MODEL
+from config import (
+    GEMINI_MODEL,
+    HTTP_TIMEOUT_S,
+    LLM_BACKEND,
+    LLM_MAX_TOKENS,
+    LLM_TEMPERATURE,
+    MODEL,
+)
 
 LogFn = Callable[[str, str], None]
 
@@ -47,7 +54,7 @@ def build_agent_llm() -> AgentLlm | None:
         return AgentLlm(
             "anthropic",
             MODEL,
-            anthropic_client=anthropic.Anthropic(api_key=anth_key),
+            anthropic_client=anthropic.Anthropic(api_key=anth_key, timeout=HTTP_TIMEOUT_S),
             gemini_api_key="",
         )
     if bk_raw == "google":
@@ -62,7 +69,7 @@ def build_agent_llm() -> AgentLlm | None:
         return AgentLlm(
             "anthropic",
             MODEL,
-            anthropic_client=anthropic.Anthropic(api_key=anth_key),
+            anthropic_client=anthropic.Anthropic(api_key=anth_key, timeout=HTTP_TIMEOUT_S),
             gemini_api_key="",
         )
     if g_key:
@@ -81,7 +88,12 @@ def synthesize_json_turn(agent: AgentLlm, system: str, user: str, log: LogFn) ->
             system=system,
             messages=[{"role": "user", "content": user}],
         )
-        return msg.content[0].text.strip()
+        blocks = getattr(msg, "content", None) or []
+        for blk in blocks:
+            t = getattr(blk, "text", None)
+            if isinstance(t, str) and t.strip():
+                return t.strip()
+        raise RuntimeError("Anthropic returned no textual content blocks.")
 
     return _synthesize_gemini_json(agent.gemini_api_key, agent.model_name, system, user, log)
 

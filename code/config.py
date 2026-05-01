@@ -35,6 +35,9 @@ GEMINI_MODEL = os.environ.get("SUPPORT_AGENT_GEMINI_MODEL", "gemini-2.0-flash")
 # auto | anthropic | google — auto picks Anthropic when ANTHROPIC_API_KEY is set, else Google when set.
 LLM_BACKEND = os.environ.get("SUPPORT_AGENT_LLM_BACKEND", "auto").strip().lower()
 
+# HTTP timeouts for synthesis (Anthropic SDK / shared httpx semantics)
+HTTP_TIMEOUT_S = float(os.environ.get("SUPPORT_AGENT_HTTP_TIMEOUT_S", "120"))
+
 # Batch / CLI
 BATCH_SLEEP_S = float(os.environ.get("SUPPORT_AGENT_BATCH_SLEEP", "0.05"))
 

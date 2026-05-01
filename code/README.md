@@ -132,6 +132,7 @@ export SUPPORT_AGENT_LOG="$PWD/logs/log.txt"
 export SUPPORT_AGENT_CACHE_DIR="$PWD/logs"
 export SUPPORT_AGENT_MODEL="claude-sonnet-4-6"
 export SUPPORT_AGENT_GEMINI_MODEL="gemini-2.0-flash"
+export SUPPORT_AGENT_HTTP_TIMEOUT_S=120
 # export SUPPORT_AGENT_REBUILD_INDEX=1
 ```
 
@@ -160,8 +161,9 @@ python code/agent.py
 
 Artifacts:
 
-- Structured transcript: `logs/log.txt` (`RESULT`, `REASONING`, `SOURCES`, **`EXPLAIN`** lexical summary).
-- Optional `trace` dict on programmatic dict outputs when `--trace` / `SUPPORT_AGENT_CLI_TRACE=1`.
+- Structured transcript: `logs/log.txt` (`RESULT`, `REASONING`, `SOURCES`, **`EXPLAIN`** lexical summary, **`BATCH_SUMMARY`** / **`LEGACY_MIX_SUMMARY`** after CSV runs).
+- Optional `trace` dict on programmatic dict outputs when `--trace` / `SUPPORT_AGENT_CLI_TRACE=1` (**never** written into official CSV columns).
+- **`--csv`** / **`--legacy-csv`**: terminal prints a compact histogram unless `--quiet`.
 
 Legacy harness (`--legacy-csv`) writes `triage_*` enrichment columns alongside originals.
 

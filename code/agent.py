@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Multi-domain terminal support triage agent (HackerRank Orchestrate baseline++).
+Orchestrate triage agent — hybrid lexical RAG, risk routing, dual-LLM grounded synthesis.
 """
 
 from __future__ import annotations
@@ -8,7 +8,6 @@ from __future__ import annotations
 import csv
 import datetime
 import json
-import os
 import re
 import sys
 import time
@@ -185,6 +184,59 @@ def strip_global_flags(argv: list[str]) -> tuple[list[str], dict[str, Any]]:
         "quiet_flag": quiet,
         "help_flag": help_seen,
     }
+
+
+def _csv_field(v: Any) -> str:
+    """Ensure DictWriter-safe string (no NULs; cap pathological structures)."""
+    if v is None:
+        return ""
+    if isinstance(v, (list, tuple)):
+        joined = " | ".join(_csv_field(x) for x in v)
+        return joined[:32000]
+    if isinstance(v, dict):
+        return json.dumps(v, ensure_ascii=False)[:32000]
+    return str(v).replace("\x00", "").strip()
+
+
+def _tri_from_row_fatal(exc: BaseException) -> dict[str, Any]:
+    return {
+        "status": "escalated",
+        "product_area": "System error",
+        "response": (
+            "Our triage pipeline encountered an unexpected fault on this row; "
+            "please route this ticket to a human analyst."
+        ),
+        "justification": f"Batch safeguard — {type(exc).__name__}: {exc!s}"[:5800],
+        "request_type": "invalid",
+        "sources": [],
+        "escalation_reason": "row_fatal",
+        "debug_routing_label": "Fatal error",
+        "debug_effective_domain": "unknown",
+    }
+
+
+def _batch_summary_status(rows: list[dict[str, Any]], *, log_tag: str, quiet: bool) -> None:
+    if not rows:
+        return
+    ctr: Counter[str] = Counter()
+    for r in rows:
+        ctr[str(r.get("status", "") or "").strip() or "(empty)"] += 1
+    parts = [f"{k}={v}" for k, v in sorted(ctr.items(), key=lambda kv: (-kv[1], kv[0]))]
+    log(f"{log_tag}_SUMMARY", " | ".join(parts))
+    if not quiet:
+        print(_c("\nBatch status mix:  " + "  ·  ".join(parts), CYAN))
+
+
+def _batch_summary_legacy(rows: list[dict[str, Any]], quiet: bool) -> None:
+    if not rows:
+        return
+    ctr: Counter[str] = Counter(
+        (str(r.get("triage_action") or "").strip() or "(empty)") for r in rows
+    )
+    parts = [f"{k}={v}" for k, v in sorted(ctr.items(), key=lambda kv: (-kv[1], kv[0]))]
+    log("LEGACY_MIX_SUMMARY", " | ".join(parts))
+    if not quiet:
+        print(_c("\nLegacy action mix:  " + "  ·  ".join(parts), CYAN))
 
 
 def _snippet_from_chunk(ch) -> str:
@@ -826,23 +878,16 @@ def process_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quiet: bool
             tri = triage_ticket(str(i), issue, subject, company, llm, retriever)
         except Exception as exc:  # pragma: no cover
             log("ROW_FATAL", repr(exc))
-            tri = {
-                "status": "escalated",
-                "product_area": "Batch error recovery",
-                "response": "We encountered an internal error processing this ticket. Please escalate manually.",
-                "justification": f"Row safeguard: unexpected exception ({exc!r}).",
-                "request_type": "invalid",
-                "sources": [],
-            }
+            tri = _tri_from_row_fatal(exc)
 
         merged = dict(row)
         merged.update(
             {
-                "status": tri["status"],
-                "product_area": tri["product_area"],
-                "response": tri["response"],
-                "justification": tri["justification"],
-                "request_type": tri["request_type"],
+                "status": _csv_field(tri.get("status")),
+                "product_area": _csv_field(tri.get("product_area")),
+                "response": _csv_field(tri.get("response")),
+                "justification": _csv_field(tri.get("justification")),
+                "request_type": _csv_field(tri.get("request_type")),
             }
         )
         out_rows.append(merged)
@@ -856,6 +901,7 @@ def process_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quiet: bool
             w.writeheader()
             for r in out_rows:
                 w.writerow(r)
+        _batch_summary_status(out_rows, log_tag="BATCH", quiet=quiet)
         if not quiet:
             print(_c(f"\nWrote {len(out_rows)} rows → {out_path.resolve()}", GREEN))
     except OSError as e:
@@ -939,29 +985,19 @@ def process_legacy_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quie
             tri = triage_ticket(tid or str(len(out_rows) + 1), text, subject, company, llm, retriever)
         except Exception as exc:  # pragma: no cover
             log("ROW_FATAL", repr(exc))
-            tri = {
-                "status": "escalated",
-                "product_area": "Batch error recovery",
-                "response": "We encountered an internal error processing this ticket. Please escalate manually.",
-                "justification": f"Row safeguard: unexpected exception ({exc!r}).",
-                "request_type": "invalid",
-                "sources": [],
-                "escalation_reason": "row_fatal",
-                "debug_routing_label": "Error",
-                "debug_effective_domain": "unknown",
-            }
+            tri = _tri_from_row_fatal(exc)
 
         action = "ESCALATED" if tri["status"] == "escalated" else "RESPOND"
         merged = dict(row)
         merged.update(
             {
-                "triage_domain": tri["debug_effective_domain"],
-                "triage_request_type": tri["debug_routing_label"],
-                "triage_product_area": tri["product_area"],
-                "triage_action": action,
-                "triage_escalation_reason": tri.get("escalation_reason", ""),
-                "triage_response": tri["response"],
-                "triage_sources": " | ".join(tri.get("sources") or []),
+                "triage_domain": _csv_field(tri.get("debug_effective_domain")),
+                "triage_request_type": _csv_field(tri.get("debug_routing_label")),
+                "triage_product_area": _csv_field(tri.get("product_area")),
+                "triage_action": _csv_field(action),
+                "triage_escalation_reason": _csv_field(tri.get("escalation_reason")),
+                "triage_response": _csv_field(tri.get("response")),
+                "triage_sources": _csv_field(" | ".join(tri.get("sources") or [])),
             }
         )
         out_rows.append(merged)
@@ -975,6 +1011,7 @@ def process_legacy_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quie
             w.writeheader()
             for r in out_rows:
                 w.writerow(r)
+        _batch_summary_legacy(out_rows, quiet=quiet)
         if not quiet:
             print(_c(f"\nWrote legacy triage CSV ({len(out_rows)} rows)", GREEN))
     except OSError as e:
@@ -986,12 +1023,11 @@ def interactive_mode(llm: AgentLlm | None) -> None:
     retriever = CorpusRetriever(DATA_DIR, CACHE_DIR)
     retriever.ensure_built()
     log("INDEX", retriever.last_index_event)
-    history: list[str] = []
 
     embed_prev = RUNTIME_CLI.get("embed_trace", False)
     RUNTIME_CLI["embed_trace"] = True
 
-    history = []
+    history: list[str] = []
     print(_c("\nInteractive mode — type quit to exit. (explainability traces ON)", CYAN))
 
     idx = 1

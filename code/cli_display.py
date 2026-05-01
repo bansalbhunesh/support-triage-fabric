@@ -39,12 +39,13 @@ def rule(char: str = "━", muted: bool = False) -> str:
 def progress_line(current: int, total: int, label: str) -> str:
     total = max(1, total)
     ratio = current / total
-    bar_w = min(44, term_cols() - 28 - len(label))
-    filled = max(1, int(bar_w * ratio))
-    empty = bar_w - filled
+    short = label[:56] + ("…" if len(label) > 56 else "")
+    bar_w = max(8, min(44, term_cols() - 28 - len(short)))
+    filled = min(bar_w - 1, max(1, int(bar_w * ratio)))
+    empty = max(0, bar_w - filled)
     bar = "[" + "=" * filled + ">" + "." * empty + "]"
     pct = int(100 * ratio)
-    return f"{_c(bar, BLUE)} {_c(str(pct) + '%', DIM)} {_c(label, MAGENTA)}"
+    return f"{_c(bar, BLUE)} {_c(str(pct) + '%', DIM)} {_c(short, MAGENTA)}"
 
 
 def confidence_meter(top1: float, margin: float, rag_ok: bool) -> tuple[str, str]:
@@ -99,7 +100,8 @@ def print_decision_explainer(tri: dict[str, Any], stats: dict[str, float], rag_o
 
     print(rule())
     print(f"{_c('DECISION', BOLD)}  {route}{esc}")
-    print(_c(summary, GREEN if tri.get("status") == "replied" else YELLOW))
+    st = isinstance(tri, dict) and tri.get("status") == "replied"
+    print(_c(summary, GREEN if st else YELLOW))
     print(f"{_c('Retrieval telemetry', DIM)}  {headline}")
     trace = tri.get("trace") if isinstance(tri, dict) else None
     if isinstance(trace, dict) and trace.get("evidence"):
