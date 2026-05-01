@@ -227,9 +227,15 @@ def _aggregate_confidence_score(
     sem = 0.0
     if sem_en > 0.5:
         sem = min(1.0, sem_t * 6.0) * 0.15 + min(1.0, sem_m * 12.0) * 0.15
+    den_en = float(stats.get("dense_enabled") or 0.0)
+    den_m = float(stats.get("dense_margin") or 0.0)
+    den_t = float(stats.get("dense_top1") or 0.0)
+    den = 0.0
+    if den_en > 0.5:
+        den = min(1.0, den_t * 4.0) * 0.1 + min(1.0, den_m * 10.0) * 0.1
     anchor = 0.15 if rag_ok else 0.0
     penalty = 0.12 if retrieval_esc else 0.0
-    return max(0.0, min(1.0, lex + sem + anchor - penalty))
+    return max(0.0, min(1.0, lex + sem + den + anchor - penalty))
 
 
 def _compose_decision_trace(
@@ -276,13 +282,20 @@ def _compose_decision_trace(
             "semantic_top1": stats.get("semantic_top1"),
             "semantic_margin": stats.get("semantic_margin"),
         },
+        "retrieval_dense": {
+            "enabled": bool(float(stats.get("dense_enabled") or 0.0) > 0.5),
+            "model": stats.get("embedding_model_name") or None,
+            "dense_top1": stats.get("dense_top1"),
+            "dense_margin": stats.get("dense_margin"),
+        },
         "retrieval_escalate": retrieval_esc,
         "retrieval_escalate_reason": retr_reason or None,
         "domain_note": domain_note,
         "decision_signals": justification_bits.copy(),
         "evidence": evid,
         "explain": (
-            "Retrieval fuses BM25, token overlap, and a deterministic semantic projection (hashed token signatures). "
+            "Retrieval fuses BM25, token overlap, deterministic semantic hashing, and optional sentence-transformer "
+            "cosine similarity when SUPPORT_AGENT_EMBEDDING_BACKEND is enabled. "
             "When the confidence gate signals weak evidence—or risk routers fire—the agent escalates instead of hallucinating policy."
         ),
     }
@@ -1037,6 +1050,9 @@ def triage_ticket(
                 f"margin={stats.get('margin', 0):.5f}",
                 f"sem_en={int(float(stats.get('semantic_enabled') or 0))}",
                 f"sem_m={float(stats.get('semantic_margin') or 0):.4f}",
+                f"d_en={int(float(stats.get('dense_enabled') or 0))}",
+                f"d_m={float(stats.get('dense_margin') or 0):.4f}",
+                f"emb={(stats.get('embedding_model_name') or 'off')[:40]}",
             ]
         ),
     )

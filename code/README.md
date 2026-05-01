@@ -142,6 +142,10 @@ export SUPPORT_AGENT_HYBRID_OVERLAP=0.30
 export SUPPORT_AGENT_HYBRID_SEMANTIC=0.18       # deterministic token projection (no embedding API)
 export SUPPORT_AGENT_SEMANTIC_DIM=256
 export SUPPORT_AGENT_GROUND_BODY_URLS=1       # scan reply body for http(s) / tel: / mailto: after citations
+# Optional dense embeddings (install: pip install -r code/requirements-embeddings.txt — large)
+# export SUPPORT_AGENT_EMBEDDING_BACKEND=sentence_transformers
+# export SUPPORT_AGENT_EMBEDDING_MODEL=all-MiniLM-L6-v2
+# export SUPPORT_AGENT_HYBRID_DENSE=0.14
 # export SUPPORT_AGENT_REBUILD_INDEX=1
 ```
 
@@ -181,7 +185,7 @@ Legacy harness (`--legacy-csv`) writes `triage_*` enrichment columns alongside o
 ## Evaluation checklist (pre-submit)
 
 1. `./support_tickets/output.csv` has **exactly** the required columns appended/updated (depending on ingest template)—never merges `trace` / debug internals.
-2. Run once with **`SUPPORT_AGENT_REBUILD_INDEX=1`** after changing `INDEX_VERSION` (v5 adds deterministic semantic projection to retrieval fusion).
+2. Run once with **`SUPPORT_AGENT_REBUILD_INDEX=1`** after changing `INDEX_VERSION` (v6 adds optional sentence-transformer dense embeddings; v5 was hash-semantic only).
 3. Verify `logs/log.txt` shows `INDEX … cache_hit` on warm runs (latency story for judges).
 4. Spot-check a **blank row** CSV (should classify as deterministic invalid-handling guard, not crash).
 5. Confirm keys never appear in zipped `code/` folder.

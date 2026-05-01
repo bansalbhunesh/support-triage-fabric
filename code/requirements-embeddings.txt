@@ -1,0 +1,4 @@
+# Optional: true dense retrieval (install only when SUPPORT_AGENT_EMBEDDING_BACKEND=sentence_transformers).
+# Large download (~90MB model) + PyTorch — not required for default lexical + hash-semantic fusion.
+sentence-transformers>=2.7.0
+torch>=2.1.0

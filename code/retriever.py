@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 
-INDEX_VERSION = 5
+INDEX_VERSION = 6
 
 try:
     import numpy as np
@@ -34,7 +34,12 @@ try:
         CHUNK_BODY_MAX_CHARS,
         CHUNK_SPLIT_OVERLAP_STRIDE,
         DEFAULT_DOMAIN_HINT_BOOST,
+        DENSE_INPUT_MAX_CHARS,
+        EMBEDDING_BACKEND,
+        EMBEDDING_BATCH,
+        EMBEDDING_MODEL,
         HYBRID_BM25_WEIGHT,
+        HYBRID_DENSE_WEIGHT,
         HYBRID_OVERLAP_WEIGHT,
         HYBRID_SEMANTIC_WEIGHT,
         SEMANTIC_HASH_BUCKETS,
@@ -44,8 +49,37 @@ except ImportError:  # pragma: no cover
     CHUNK_BODY_MAX_CHARS, CHUNK_SPLIT_OVERLAP_STRIDE = 2000, 260
     HYBRID_BM25_WEIGHT, HYBRID_OVERLAP_WEIGHT = 0.52, 0.30
     HYBRID_SEMANTIC_WEIGHT = 0.18
+    HYBRID_DENSE_WEIGHT = 0.14
     SEMANTIC_HASH_DIM, SEMANTIC_HASH_BUCKETS = 256, 4096
     DEFAULT_DOMAIN_HINT_BOOST = 1.38
+    EMBEDDING_BACKEND, EMBEDDING_MODEL = "none", "all-MiniLM-L6-v2"
+    EMBEDDING_BATCH = 32
+    DENSE_INPUT_MAX_CHARS = 2000
+
+_ST_MODEL: Any = None
+_ST_INIT_FAILED = False
+
+
+def _sentence_transformer_model() -> Any:
+    global _ST_MODEL, _ST_INIT_FAILED
+    if _ST_INIT_FAILED:
+        return None
+    if _ST_MODEL is not None:
+        return _ST_MODEL
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        _ST_MODEL = SentenceTransformer(EMBEDDING_MODEL)  # type: ignore[misc]
+    except Exception:
+        _ST_INIT_FAILED = True
+        return None
+    return _ST_MODEL
+
+
+def _dense_backend_requested() -> bool:
+    be = (EMBEDDING_BACKEND or "").lower()
+    return be in ("sentence_transformers", "sentence-transformers", "st", "minilm")
+
 
 _PROJ_CACHE: dict[tuple[int, int], Any] = {}
 
@@ -231,8 +265,9 @@ def compute_corpus_fingerprint(data_root: Path) -> str:
     """Stable hash of corpus files + distilled FAQ overlay (invalidates cache on change)."""
     h = hashlib.sha256()
     h.update(
-        f"index_v={INDEX_VERSION}|algo=bm25_overlap_sem|sw={HYBRID_SEMANTIC_WEIGHT}|"
-        f"dim={SEMANTIC_HASH_DIM}|bk={SEMANTIC_HASH_BUCKETS}\n".encode()
+        f"index_v={INDEX_VERSION}|algo=bm25_overlap_sem_dense|sw={HYBRID_SEMANTIC_WEIGHT}|"
+        f"dim={SEMANTIC_HASH_DIM}|bk={SEMANTIC_HASH_BUCKETS}|"
+        f"dense_be={EMBEDDING_BACKEND}|dm={EMBEDDING_MODEL}|dw={HYBRID_DENSE_WEIGHT}\n".encode()
     )
     for domain in ("hackerrank", "claude", "visa"):
         root = data_root / domain
@@ -263,7 +298,7 @@ def _index_cache_path(cache_dir: Path, fingerprint: str) -> Path:
     return cache_dir / f"bm25_index_v{INDEX_VERSION}_{short}.pkl.gz"
 
 
-def _try_load_index_cache(path: Path, fingerprint: str) -> tuple[list[Chunk], list[list[str]]] | None:
+def _try_load_index_cache(path: Path, fingerprint: str) -> tuple[list[Chunk], list[list[str]], Any] | None:
     if not path.is_file():
         return None
     try:
@@ -277,23 +312,29 @@ def _try_load_index_cache(path: Path, fingerprint: str) -> tuple[list[Chunk], li
     tokenized = payload.get("tokenized")
     if not isinstance(chunks, list) or not isinstance(tokenized, list):
         return None
-    return chunks, tokenized
+    dense = payload.get("dense_embeddings")
+    return chunks, tokenized, dense
 
 
-def _save_index_cache(path: Path, fingerprint: str, chunks: list[Chunk], tokenized: list[list[str]]) -> None:
+def _save_index_cache(
+    path: Path,
+    fingerprint: str,
+    chunks: list[Chunk],
+    tokenized: list[list[str]],
+    dense_embeddings: Any = None,
+) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
+        body: dict[str, Any] = {
+            "version": INDEX_VERSION,
+            "fingerprint": fingerprint,
+            "chunks": chunks,
+            "tokenized": tokenized,
+        }
+        if dense_embeddings is not None and np is not None:
+            body["dense_embeddings"] = dense_embeddings.astype(np.float16)
         with gzip.open(tmp, "wb", compresslevel=6) as gz:
-            pickle.dump(
-                {
-                    "version": INDEX_VERSION,
-                    "fingerprint": fingerprint,
-                    "chunks": chunks,
-                    "tokenized": tokenized,
-                },
-                gz,
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )
+            pickle.dump(body, gz, protocol=pickle.HIGHEST_PROTOCOL)
         tmp.replace(path)
     except OSError:
         try:
@@ -311,7 +352,25 @@ class CorpusRetriever:
         self._tokenized: list[list[str]] = []
         self._semantic_mat: Any = None
         self._semantic_materialized = False
+        self._dense_mat: Any = None
         self.last_index_event: str = "uninitialized"
+
+    def _materialize_dense_matrix(self) -> None:
+        if self._dense_mat is not None:
+            return
+        if not _dense_backend_requested() or HYBRID_DENSE_WEIGHT <= 1e-9 or np is None or not self.chunks:
+            return
+        model = _sentence_transformer_model()
+        if model is None:
+            return
+        texts = [c.as_retrieval_blob()[:DENSE_INPUT_MAX_CHARS] for c in self.chunks]
+        self._dense_mat = model.encode(
+            texts,
+            batch_size=EMBEDDING_BATCH,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ).astype(np.float32)
 
     def _materialize_semantic_matrix(self) -> None:
         if self._semantic_materialized:
@@ -341,12 +400,18 @@ class CorpusRetriever:
         if not rebuild:
             cached = _try_load_index_cache(cache_path, fingerprint)
             if cached is not None:
-                self.chunks, self._tokenized = cached
+                self.chunks, self._tokenized, dense_cached = cached
                 self.last_index_event = f"cache_hit:{cache_path.name}"
                 if BM25Okapi is None or not self._tokenized:
                     self._bm25 = None
                 else:
                     self._bm25 = BM25Okapi(self._tokenized)
+                if _dense_backend_requested():
+                    if isinstance(dense_cached, np.ndarray):
+                        self._dense_mat = dense_cached.astype(np.float32)
+                    else:
+                        self._dense_mat = None
+                        self._materialize_dense_matrix()
                 return
 
         self.chunks = load_chunks(self.data_root)
@@ -357,9 +422,18 @@ class CorpusRetriever:
         else:
             self._bm25 = BM25Okapi(self._tokenized)
 
+        self._materialize_semantic_matrix()
+        self._materialize_dense_matrix()
+
         if not rebuild:
             try:
-                _save_index_cache(cache_path, fingerprint, self.chunks, self._tokenized)
+                _save_index_cache(
+                    cache_path,
+                    fingerprint,
+                    self.chunks,
+                    self._tokenized,
+                    self._dense_mat,
+                )
                 self.last_index_event = f"built_fresh_saved:{cache_path.name}"
             except OSError:
                 self.last_index_event = "built_fresh_save_failed"
@@ -373,6 +447,7 @@ class CorpusRetriever:
     ) -> tuple[list[tuple[Chunk, float]], dict[str, float]]:
         self.ensure_built()
         self._materialize_semantic_matrix()
+        self._materialize_dense_matrix()
         qtok = tokenize(query)
         stats: dict[str, float] = {"query_tokens": float(len(qtok))}
 
@@ -413,6 +488,22 @@ class CorpusRetriever:
             sem_window = [max(0.0, float(sem_all[i])) for i in cand_idx]
             mx_s = max(sem_window, default=1.0) or 1.0
 
+        dense_all: Any = None
+        dense_window: list[float] | None = None
+        mx_d = 1.0
+        if self._dense_mat is not None and HYBRID_DENSE_WEIGHT > 1e-9 and np is not None:
+            st_model = _sentence_transformer_model()
+            if st_model is not None:
+                q_dense = st_model.encode(
+                    [(query or "")[:DENSE_INPUT_MAX_CHARS]],
+                    convert_to_numpy=True,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                )[0].astype(np.float32)
+                dense_all = self._dense_mat @ q_dense
+                dense_window = [max(0.0, float(dense_all[i])) for i in cand_idx]
+                mx_d = max(dense_window, default=1.0) or 1.0
+
         fused: dict[int, float] = {}
         for j, i in enumerate(cand_idx):
             b = raw_lex[i] / mx_b
@@ -421,6 +512,9 @@ class CorpusRetriever:
             if sem_window is not None:
                 sem_n = sem_window[j] / mx_s
                 piece += HYBRID_SEMANTIC_WEIGHT * sem_n
+            if dense_window is not None:
+                d_n = dense_window[j] / mx_d
+                piece += HYBRID_DENSE_WEIGHT * d_n
             fused[i] = piece
 
         reranked = sorted(fused.items(), key=lambda x: x[1], reverse=True)[:top_k]
@@ -448,6 +542,20 @@ class CorpusRetriever:
             stats["semantic_top1"] = 0.0
             stats["semantic_margin"] = 0.0
             stats["semantic_enabled"] = 0.0
+
+        if dense_all is not None and reranked:
+            di0 = reranked[0][0]
+            d0 = max(0.0, float(dense_all[di0]))
+            d1 = max(0.0, float(dense_all[reranked[1][0]])) if len(reranked) > 1 else 0.0
+            stats["dense_top1"] = float(d0)
+            stats["dense_margin"] = float((d0 - d1) / (d0 + 1e-6)) if d0 else 0.0
+            stats["dense_enabled"] = 1.0
+            stats["embedding_model_name"] = EMBEDDING_MODEL if _dense_backend_requested() else ""
+        else:
+            stats["dense_top1"] = 0.0
+            stats["dense_margin"] = 0.0
+            stats["dense_enabled"] = 0.0
+            stats["embedding_model_name"] = ""
         return out, stats
 
 
