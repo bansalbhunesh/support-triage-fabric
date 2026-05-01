@@ -125,7 +125,15 @@ def _synthesize_gemini_json(
         response_mime_type="application/json",
     )
 
-    resp = gm.generate_content(user, generation_config=cfg)
+    req_opts = {"timeout": HTTP_TIMEOUT_S}
+    try:
+        from google.generativeai.types import RequestOptions
+
+        req_opts = RequestOptions(timeout=HTTP_TIMEOUT_S)
+    except ImportError:
+        pass
+
+    resp = gm.generate_content(user, generation_config=cfg, request_options=req_opts)
     if not resp.candidates:
         fb = getattr(resp, "prompt_feedback", None)
         log("GEMINI_BLOCK", repr(fb) if fb else "no_candidates")

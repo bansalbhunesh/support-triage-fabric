@@ -132,7 +132,9 @@ export SUPPORT_AGENT_LOG="$PWD/logs/log.txt"
 export SUPPORT_AGENT_CACHE_DIR="$PWD/logs"
 export SUPPORT_AGENT_MODEL="claude-sonnet-4-6"
 export SUPPORT_AGENT_GEMINI_MODEL="gemini-2.0-flash"
-export SUPPORT_AGENT_HTTP_TIMEOUT_S=120
+export SUPPORT_AGENT_HTTP_TIMEOUT_S=120          # Anthropic SDK + Gemini REST (google-generativeai)
+export SUPPORT_AGENT_LLM_USER_MAX_CHARS=26000   # Cap subject/issue in synthesis user envelope only
+export SUPPORT_AGENT_LLM_MAX_TOKENS=1200
 # export SUPPORT_AGENT_REBUILD_INDEX=1
 ```
 
