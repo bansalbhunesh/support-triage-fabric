@@ -22,12 +22,17 @@ HYBRID_SEMANTIC_WEIGHT = float(os.environ.get("SUPPORT_AGENT_HYBRID_SEMANTIC", "
 SEMANTIC_HASH_DIM = int(os.environ.get("SUPPORT_AGENT_SEMANTIC_DIM", "256"))
 SEMANTIC_HASH_BUCKETS = int(os.environ.get("SUPPORT_AGENT_SEMANTIC_BUCKETS", "4096"))
 
-# Optional dense embeddings (sentence-transformers). See code/requirements-embeddings.txt
+# Optional dense embeddings (st / openai / gemini). See code/requirements-embeddings.txt
 EMBEDDING_BACKEND = os.environ.get("SUPPORT_AGENT_EMBEDDING_BACKEND", "none").strip().lower()
 EMBEDDING_MODEL = os.environ.get("SUPPORT_AGENT_EMBEDDING_MODEL", "all-MiniLM-L6-v2").strip()
 EMBEDDING_BATCH = int(os.environ.get("SUPPORT_AGENT_EMBEDDING_BATCH", "32"))
 HYBRID_DENSE_WEIGHT = float(os.environ.get("SUPPORT_AGENT_HYBRID_DENSE", "0.14"))
 DENSE_INPUT_MAX_CHARS = int(os.environ.get("SUPPORT_AGENT_DENSE_INPUT_MAX_CHARS", "2000"))
+
+# API dense embeddings (no local torch). OPENAI_API_KEY or GOOGLE_API_KEY / GEMINI_API_KEY.
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+OPENAI_EMBEDDING_MODEL = os.environ.get("SUPPORT_AGENT_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small").strip()
+GEMINI_EMBEDDING_MODEL = os.environ.get("SUPPORT_AGENT_GEMINI_EMBEDDING_MODEL", "models/text-embedding-004").strip()
 
 # LLM
 LLM_TEMPERATURE = float(os.environ.get("SUPPORT_AGENT_LLM_TEMPERATURE", "0"))

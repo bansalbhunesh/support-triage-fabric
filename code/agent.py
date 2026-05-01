@@ -294,8 +294,8 @@ def _compose_decision_trace(
         "decision_signals": justification_bits.copy(),
         "evidence": evid,
         "explain": (
-            "Retrieval fuses BM25, token overlap, deterministic semantic hashing, and optional sentence-transformer "
-            "cosine similarity when SUPPORT_AGENT_EMBEDDING_BACKEND is enabled. "
+            "Retrieval fuses BM25, token overlap, deterministic semantic hashing, and optional dense cosine similarity "
+            "(sentence_transformers, openai, or gemini backends via SUPPORT_AGENT_EMBEDDING_BACKEND). "
             "When the confidence gate signals weak evidence—or risk routers fire—the agent escalates instead of hallucinating policy."
         ),
     }

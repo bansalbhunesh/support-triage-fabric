@@ -142,9 +142,13 @@ export SUPPORT_AGENT_HYBRID_OVERLAP=0.30
 export SUPPORT_AGENT_HYBRID_SEMANTIC=0.18       # deterministic token projection (no embedding API)
 export SUPPORT_AGENT_SEMANTIC_DIM=256
 export SUPPORT_AGENT_GROUND_BODY_URLS=1       # scan reply body for http(s) / tel: / mailto: after citations
-# Optional dense embeddings (install: pip install -r code/requirements-embeddings.txt — large)
-# export SUPPORT_AGENT_EMBEDDING_BACKEND=sentence_transformers
+# Optional dense embeddings — pick backend (then SUPPORT_AGENT_REBUILD_INDEX=1 once):
+# export SUPPORT_AGENT_EMBEDDING_BACKEND=sentence_transformers   # + pip install -r code/requirements-embeddings.txt
 # export SUPPORT_AGENT_EMBEDDING_MODEL=all-MiniLM-L6-v2
+# export SUPPORT_AGENT_EMBEDDING_BACKEND=openai                # + export OPENAI_API_KEY=...
+# export SUPPORT_AGENT_OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+# export SUPPORT_AGENT_EMBEDDING_BACKEND=gemini                  # + GOOGLE_API_KEY or GEMINI_API_KEY
+# export SUPPORT_AGENT_GEMINI_EMBEDDING_MODEL=models/text-embedding-004
 # export SUPPORT_AGENT_HYBRID_DENSE=0.14
 # export SUPPORT_AGENT_REBUILD_INDEX=1
 ```

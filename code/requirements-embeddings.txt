@@ -1,4 +1,9 @@
-# Optional: true dense retrieval (install only when SUPPORT_AGENT_EMBEDDING_BACKEND=sentence_transformers).
-# Large download (~90MB model) + PyTorch — not required for default lexical + hash-semantic fusion.
+# Optional: true dense retrieval — pick ONE backend via SUPPORT_AGENT_EMBEDDING_BACKEND.
+#
+# A) sentence_transformers (local; large PyTorch + model download)
 sentence-transformers>=2.7.0
 torch>=2.1.0
+#
+# B) openai — only needs OPENAI_API_KEY (uses stdlib urllib in retriever.py; no extra pip).
+#
+# C) gemini — uses existing google-generativeai from code/requirements.txt + GOOGLE_API_KEY / GEMINI_API_KEY.

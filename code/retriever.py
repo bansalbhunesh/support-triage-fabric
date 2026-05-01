@@ -38,10 +38,15 @@ try:
         EMBEDDING_BACKEND,
         EMBEDDING_BATCH,
         EMBEDDING_MODEL,
+        GEMINI_EMBEDDING_MODEL,
+        GOOGLE_API_KEY,
+        HTTP_TIMEOUT_S,
         HYBRID_BM25_WEIGHT,
         HYBRID_DENSE_WEIGHT,
         HYBRID_OVERLAP_WEIGHT,
         HYBRID_SEMANTIC_WEIGHT,
+        OPENAI_API_KEY,
+        OPENAI_EMBEDDING_MODEL,
         SEMANTIC_HASH_BUCKETS,
         SEMANTIC_HASH_DIM,
     )
@@ -55,6 +60,10 @@ except ImportError:  # pragma: no cover
     EMBEDDING_BACKEND, EMBEDDING_MODEL = "none", "all-MiniLM-L6-v2"
     EMBEDDING_BATCH = 32
     DENSE_INPUT_MAX_CHARS = 2000
+    OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL = "", "text-embedding-3-small"
+    GEMINI_EMBEDDING_MODEL = "models/text-embedding-004"
+    GOOGLE_API_KEY = ""
+    HTTP_TIMEOUT_S = 120.0
 
 _ST_MODEL: Any = None
 _ST_INIT_FAILED = False
@@ -76,9 +85,151 @@ def _sentence_transformer_model() -> Any:
     return _ST_MODEL
 
 
-def _dense_backend_requested() -> bool:
+def _dense_embed_kind() -> str:
+    """Which dense backend is active (requires keys + deps per backend)."""
     be = (EMBEDDING_BACKEND or "").lower()
-    return be in ("sentence_transformers", "sentence-transformers", "st", "minilm")
+    if be in ("sentence_transformers", "sentence-transformers", "st", "minilm"):
+        return "st"
+    if be in ("openai", "oai"):
+        return "openai" if OPENAI_API_KEY else "none"
+    if be in ("gemini", "google", "google_embedding"):
+        return "gemini" if GOOGLE_API_KEY else "none"
+    return "none"
+
+
+def _dense_backend_requested() -> bool:
+    return _dense_embed_kind() != "none"
+
+
+def _fingerprint_dense_model() -> str:
+    k = _dense_embed_kind()
+    if k == "openai":
+        return f"oa:{OPENAI_EMBEDDING_MODEL}"
+    if k == "gemini":
+        return f"gm:{GEMINI_EMBEDDING_MODEL}"
+    if k == "st":
+        return f"st:{EMBEDDING_MODEL}"
+    return "off"
+
+
+def _l2_normalize_rows(mat: Any) -> Any:
+    n = np.linalg.norm(mat, axis=1, keepdims=True)
+    return mat / np.maximum(n, 1e-8)
+
+
+def _openai_embed_texts(texts: list[str]) -> Any:
+    if not OPENAI_API_KEY or np is None:
+        raise RuntimeError("OPENAI_API_KEY missing for openai embedding backend")
+    import json
+    import urllib.request
+
+    all_rows: list[list[float]] = []
+    bs = max(1, min(EMBEDDING_BATCH, 64))
+    url = "https://api.openai.com/v1/embeddings"
+    timeout = int(max(30, HTTP_TIMEOUT_S))
+    for i in range(0, len(texts), bs):
+        batch = texts[i : i + bs]
+        payload = json.dumps({"model": OPENAI_EMBEDDING_MODEL, "input": batch}).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
+        req.add_header("Authorization", f"Bearer {OPENAI_API_KEY}")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        for item in sorted(data.get("data", []), key=lambda x: int(x.get("index", 0))):
+            all_rows.append(item["embedding"])
+    mat = np.asarray(all_rows, dtype=np.float32)
+    return _l2_normalize_rows(mat)
+
+
+def _parse_gemini_embedding_batch(r: Any) -> list[Any]:
+    if r is None:
+        return []
+    if isinstance(r, dict):
+        if "embeddings" in r:
+            out: list[Any] = []
+            for e in r["embeddings"]:
+                if isinstance(e, dict) and "values" in e:
+                    out.append(np.asarray(e["values"], dtype=np.float32))
+                elif isinstance(e, dict) and "embedding" in e:
+                    out.append(np.asarray(e["embedding"], dtype=np.float32))
+            return out
+        if "embedding" in r:
+            return [np.asarray(r["embedding"], dtype=np.float32)]
+    emb = getattr(r, "embedding", None)
+    if emb is not None:
+        return [np.asarray(emb, dtype=np.float32)]
+    embs = getattr(r, "embeddings", None)
+    if embs:
+        return [np.asarray(getattr(x, "values", x), dtype=np.float32) for x in embs]
+    return []
+
+
+def _gemini_embed_texts(texts: list[str]) -> Any:
+    if not GOOGLE_API_KEY or np is None:
+        raise RuntimeError("GOOGLE_API_KEY or GEMINI_API_KEY missing for gemini embedding backend")
+    import google.generativeai as genai
+
+    genai.configure(api_key=GOOGLE_API_KEY)
+    bs = max(1, min(EMBEDDING_BATCH, 100))
+    rows: list[Any] = []
+    for i in range(0, len(texts), bs):
+        batch = texts[i : i + bs]
+        r = genai.embed_content(
+            model=GEMINI_EMBEDDING_MODEL,
+            content=batch,
+            task_type="retrieval_document",
+        )
+        parsed = _parse_gemini_embedding_batch(r)
+        if len(parsed) == len(batch):
+            rows.extend(parsed)
+            continue
+        for t in batch:
+            r1 = genai.embed_content(
+                model=GEMINI_EMBEDDING_MODEL,
+                content=t,
+                task_type="retrieval_document",
+            )
+            one = _parse_gemini_embedding_batch(r1 if isinstance(r1, dict) else {})
+            if not one and r1 is not None and getattr(r1, "embedding", None) is not None:
+                one = [np.asarray(r1.embedding, dtype=np.float32)]
+            if one:
+                rows.append(one[0])
+    if not rows:
+        raise RuntimeError("Gemini returned no embeddings")
+    mat = np.stack(rows, axis=0)
+    return _l2_normalize_rows(mat)
+
+
+def _embed_dense_query_vector(kind: str, query: str) -> Any:
+    if np is None:
+        return None
+    q = (query or "")[:DENSE_INPUT_MAX_CHARS]
+    if kind == "st":
+        m = _sentence_transformer_model()
+        if m is None:
+            return None
+        return m.encode(
+            [q],
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )[0].astype(np.float32)
+    if kind == "openai":
+        return _openai_embed_texts([q])[0]
+    if kind == "gemini":
+        return _gemini_embed_texts([q])[0]
+    return None
+
+
+def _dense_stats_model_name() -> str:
+    k = _dense_embed_kind()
+    if k == "openai":
+        return OPENAI_EMBEDDING_MODEL
+    if k == "gemini":
+        return GEMINI_EMBEDDING_MODEL
+    if k == "st":
+        return EMBEDDING_MODEL
+    return ""
 
 
 _PROJ_CACHE: dict[tuple[int, int], Any] = {}
@@ -267,7 +418,7 @@ def compute_corpus_fingerprint(data_root: Path) -> str:
     h.update(
         f"index_v={INDEX_VERSION}|algo=bm25_overlap_sem_dense|sw={HYBRID_SEMANTIC_WEIGHT}|"
         f"dim={SEMANTIC_HASH_DIM}|bk={SEMANTIC_HASH_BUCKETS}|"
-        f"dense_be={EMBEDDING_BACKEND}|dm={EMBEDDING_MODEL}|dw={HYBRID_DENSE_WEIGHT}\n".encode()
+        f"dense_be={EMBEDDING_BACKEND}|dm={_fingerprint_dense_model()}|dw={HYBRID_DENSE_WEIGHT}\n".encode()
     )
     for domain in ("hackerrank", "claude", "visa"):
         root = data_root / domain
@@ -358,19 +509,29 @@ class CorpusRetriever:
     def _materialize_dense_matrix(self) -> None:
         if self._dense_mat is not None:
             return
-        if not _dense_backend_requested() or HYBRID_DENSE_WEIGHT <= 1e-9 or np is None or not self.chunks:
-            return
-        model = _sentence_transformer_model()
-        if model is None:
+        kind = _dense_embed_kind()
+        if kind == "none" or HYBRID_DENSE_WEIGHT <= 1e-9 or np is None or not self.chunks:
             return
         texts = [c.as_retrieval_blob()[:DENSE_INPUT_MAX_CHARS] for c in self.chunks]
-        self._dense_mat = model.encode(
-            texts,
-            batch_size=EMBEDDING_BATCH,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        ).astype(np.float32)
+        try:
+            if kind == "st":
+                model = _sentence_transformer_model()
+                if model is None:
+                    return
+                self._dense_mat = model.encode(
+                    texts,
+                    batch_size=EMBEDDING_BATCH,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                ).astype(np.float32)
+            elif kind == "openai":
+                self._dense_mat = _openai_embed_texts(texts)
+            elif kind == "gemini":
+                self._dense_mat = _gemini_embed_texts(texts)
+        except Exception:
+            self._dense_mat = None
+            self.last_index_event = f"{self.last_index_event}|dense_build_failed"
 
     def _materialize_semantic_matrix(self) -> None:
         if self._semantic_materialized:
@@ -492,14 +653,8 @@ class CorpusRetriever:
         dense_window: list[float] | None = None
         mx_d = 1.0
         if self._dense_mat is not None and HYBRID_DENSE_WEIGHT > 1e-9 and np is not None:
-            st_model = _sentence_transformer_model()
-            if st_model is not None:
-                q_dense = st_model.encode(
-                    [(query or "")[:DENSE_INPUT_MAX_CHARS]],
-                    convert_to_numpy=True,
-                    normalize_embeddings=True,
-                    show_progress_bar=False,
-                )[0].astype(np.float32)
+            q_dense = _embed_dense_query_vector(_dense_embed_kind(), query)
+            if q_dense is not None:
                 dense_all = self._dense_mat @ q_dense
                 dense_window = [max(0.0, float(dense_all[i])) for i in cand_idx]
                 mx_d = max(dense_window, default=1.0) or 1.0
@@ -550,7 +705,7 @@ class CorpusRetriever:
             stats["dense_top1"] = float(d0)
             stats["dense_margin"] = float((d0 - d1) / (d0 + 1e-6)) if d0 else 0.0
             stats["dense_enabled"] = 1.0
-            stats["embedding_model_name"] = EMBEDDING_MODEL if _dense_backend_requested() else ""
+            stats["embedding_model_name"] = _dense_stats_model_name()
         else:
             stats["dense_top1"] = 0.0
             stats["dense_margin"] = 0.0
