@@ -33,6 +33,8 @@ DENSE_INPUT_MAX_CHARS = int(os.environ.get("SUPPORT_AGENT_DENSE_INPUT_MAX_CHARS"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 OPENAI_EMBEDDING_MODEL = os.environ.get("SUPPORT_AGENT_OPENAI_EMBEDDING_MODEL", "text-embedding-3-small").strip()
 GEMINI_EMBEDDING_MODEL = os.environ.get("SUPPORT_AGENT_GEMINI_EMBEDDING_MODEL", "models/text-embedding-004").strip()
+# Per-request timeout for OpenAI embedding HTTP calls (corpus indexing batches; separate from LLM synthesis).
+EMBEDDING_HTTP_TIMEOUT_S = float(os.environ.get("SUPPORT_AGENT_EMBEDDING_HTTP_TIMEOUT_S", "300"))
 
 # LLM
 LLM_TEMPERATURE = float(os.environ.get("SUPPORT_AGENT_LLM_TEMPERATURE", "0"))

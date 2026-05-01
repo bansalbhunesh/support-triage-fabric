@@ -150,6 +150,7 @@ export SUPPORT_AGENT_GROUND_BODY_URLS=1       # scan reply body for http(s) / te
 # export SUPPORT_AGENT_EMBEDDING_BACKEND=gemini                  # + GOOGLE_API_KEY or GEMINI_API_KEY
 # export SUPPORT_AGENT_GEMINI_EMBEDDING_MODEL=models/text-embedding-004
 # export SUPPORT_AGENT_HYBRID_DENSE=0.14
+# export SUPPORT_AGENT_EMBEDDING_HTTP_TIMEOUT_S=300   # OpenAI urllib per-batch (indexing)
 # export SUPPORT_AGENT_REBUILD_INDEX=1
 ```
 

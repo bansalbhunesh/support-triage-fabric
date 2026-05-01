@@ -37,10 +37,10 @@ try:
         DENSE_INPUT_MAX_CHARS,
         EMBEDDING_BACKEND,
         EMBEDDING_BATCH,
+        EMBEDDING_HTTP_TIMEOUT_S,
         EMBEDDING_MODEL,
         GEMINI_EMBEDDING_MODEL,
         GOOGLE_API_KEY,
-        HTTP_TIMEOUT_S,
         HYBRID_BM25_WEIGHT,
         HYBRID_DENSE_WEIGHT,
         HYBRID_OVERLAP_WEIGHT,
@@ -63,7 +63,7 @@ except ImportError:  # pragma: no cover
     OPENAI_API_KEY, OPENAI_EMBEDDING_MODEL = "", "text-embedding-3-small"
     GEMINI_EMBEDDING_MODEL = "models/text-embedding-004"
     GOOGLE_API_KEY = ""
-    HTTP_TIMEOUT_S = 120.0
+    EMBEDDING_HTTP_TIMEOUT_S = 300.0
 
 _ST_MODEL: Any = None
 _ST_INIT_FAILED = False
@@ -126,7 +126,7 @@ def _openai_embed_texts(texts: list[str]) -> Any:
     all_rows: list[list[float]] = []
     bs = max(1, min(EMBEDDING_BATCH, 64))
     url = "https://api.openai.com/v1/embeddings"
-    timeout = int(max(30, HTTP_TIMEOUT_S))
+    timeout = int(max(30, EMBEDDING_HTTP_TIMEOUT_S))
     for i in range(0, len(texts), bs):
         batch = texts[i : i + bs]
         payload = json.dumps({"model": OPENAI_EMBEDDING_MODEL, "input": batch}).encode("utf-8")
