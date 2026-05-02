@@ -100,13 +100,15 @@ flowchart LR
 
 ## Technical stack
 
-- **Python 3.11+** recommended
-- `rank_bm25`, `numpy`, `pydantic`, `anthropic`, `google-generativeai`
+- **Python 3.10+** required for pinned NumPy 2.x; **3.11+** recommended
+- `rank_bm25`, `numpy`, `pydantic`, `anthropic`, `google-generativeai` (exact versions in `requirements.txt`)
 - No vector DB required (portable + judge-friendly)
 
 ---
 
 ## Setup
+
+Dependencies are **pinned** for reproducible leaderboard runs. Install from repo root:
 
 ```bash
 python -m venv .venv
@@ -166,6 +168,12 @@ python code/main.py --help
 
 # Official evaluation path
 python code/main.py --csv support_tickets/support_tickets.csv support_tickets/output.csv
+
+# Same batch, guaranteed 8 columns (from repo root; helpers also in ../scripts/)
+export SUPPORT_AGENT_CSV_EVAL_MINIMAL=1
+python code/main.py --quiet --csv support_tickets/support_tickets.csv support_tickets/output.csv
+# or: bash scripts/run_official_csv.sh
+# or:  pwsh scripts/run_official_csv.ps1
 
 # Richer batch logs + optional per-row trace JSON (for judges / debugging)
 python code/agent.py --trace --csv support_tickets/support_tickets.csv /tmp/out.csv

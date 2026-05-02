@@ -1225,7 +1225,7 @@ def process_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quiet: bool
     if out_rows and _save_csv_dict_rows(out_path, out_rows):
         _batch_summary_status(out_rows, log_tag="BATCH", quiet=quiet)
         if not quiet:
-            print(_c(f"\nWrote {len(out_rows)} rows → {out_path.resolve()}", GREEN))
+            print(_c(f"\nWrote {len(out_rows)} rows -> {out_path.resolve()}", GREEN))
 
 
 def process_legacy_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quiet: bool = False) -> None:
@@ -1414,7 +1414,7 @@ def main(argv: list[str]) -> None:
     if CSV_EVAL_MINIMAL:
         print(
             _c(
-                "CSV mode: SUPPORT_AGENT_CSV_EVAL_MINIMAL → 8 columns "
+                "CSV mode: SUPPORT_AGENT_CSV_EVAL_MINIMAL -> 8 columns "
                 "(issue, subject, company + 5 graded)",
                 YELLOW,
             )
@@ -1472,7 +1472,7 @@ def main(argv: list[str]) -> None:
 
     finally:
         flush_log()
-        print(_c(f"\nTranscript flushed → {LOG_FILE}", DIM))
+        print(_c(f"\nTranscript flushed -> {LOG_FILE}", DIM))
 
 
 if __name__ == "__main__":
