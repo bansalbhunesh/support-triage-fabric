@@ -1,6 +1,6 @@
 # Support Triage Fabric
 
-**Orchestrate May 2026** — corpus-only, multi-domain support triage with **deterministic lexical RAG**, **risk-aware routing**, and **dual-LLM synthesis** (Anthropic Claude or Google Gemini) behind a unified **structured-output + citation-grounding** contract.
+**Orchestrate May 2026** — corpus-only, multi-domain support triage with **deterministic lexical RAG**, **risk-aware routing**, and **LLM synthesis** via **Google Gemini and/or Anthropic Claude** (either is fine; the official challenge does **not** require an Anthropic key) behind a unified **structured-output + citation-grounding** contract.
 
 Judges see a deliberate stack: retrieval you can inspect, escalation you can explain, and demos that render well in the terminal—without brittle web dependencies or corpus-breaking “magic prompt” paths.
 
@@ -101,7 +101,7 @@ flowchart LR
 ## Technical stack
 
 - **Python 3.10+** required for pinned NumPy 2.x; **3.11+** recommended
-- `rank_bm25`, `numpy`, `pydantic`, `anthropic`, `google-generativeai` (exact versions in `requirements.txt`)
+- `rank_bm25`, `numpy`, `pydantic`, `google-generativeai`; optional `anthropic` for Claude API (see `requirements.txt` vs `requirements-gemini.txt`)
 - No vector DB required (portable + judge-friendly)
 
 ---
@@ -113,18 +113,30 @@ Dependencies are **pinned** for reproducible leaderboard runs. Install from repo
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# Default: both SDKs (you still only need one API key at runtime)
 pip install -r code/requirements.txt
+# Gemini-only / no Anthropic wheel on disk:
+# pip install -r code/requirements-gemini.txt
 ```
 
 ### Secrets (environment only)
 
-```bash
-# Pick ONE primary backend unless forcing explicitly
-export ANTHROPIC_API_KEY=sk-ant-api03-...
-# OR
-export GOOGLE_API_KEY=...        # alias: GEMINI_API_KEY
-export SUPPORT_AGENT_LLM_BACKEND=google   # optional override
+Per `problem_statement.md`, grading is on corpus-grounded triage — **not** on using Anthropic. **Gemini-only is sufficient:**
 
+```bash
+export GOOGLE_API_KEY=...        # alias: GEMINI_API_KEY
+export SUPPORT_AGENT_LLM_BACKEND=google   # recommended when you have no Anthropic key
+```
+
+**Optional** — Anthropic Claude API (only if you choose this backend):
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-api03-...
+```
+
+With default **`auto`** backend, if **both** `ANTHROPIC_API_KEY` and a Google key are set, **Anthropic is selected first**. Omit `ANTHROPIC_API_KEY` or set `SUPPORT_AGENT_LLM_BACKEND=google` to run **Gemini only**.
+
+```bash
 # Explainability blob on every ticket (JSON `trace` key — not merged into official CSV columns)
 export SUPPORT_AGENT_CLI_TRACE=1
 

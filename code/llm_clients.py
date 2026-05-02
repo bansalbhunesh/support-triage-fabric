@@ -1,15 +1,18 @@
 """
 Unified Anthropic Claude vs Google Gemini client for corpus-grounded triage synthesis.
 Reads keys only from the environment — never bundle secrets.
+
+The hackathon does **not** require an Anthropic key: set `GOOGLE_API_KEY` (or
+`GEMINI_API_KEY`) and optionally `SUPPORT_AGENT_LLM_BACKEND=google`. The
+`anthropic` package is only loaded when that backend is selected (see
+`requirements-gemini.txt` for a minimal install without it).
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Callable, Literal
-
-import anthropic
+from typing import Any, Callable, Literal
 
 from config import (
     GEMINI_MODEL,
@@ -33,12 +36,25 @@ class AgentLlm:
 
     backend: Literal["anthropic", "google"]
     model_name: str
-    anthropic_client: anthropic.Anthropic | None = None
+    anthropic_client: Any = None  # anthropic.Anthropic when backend is anthropic
     gemini_api_key: str = ""
 
     @property
     def label(self) -> str:
         return f"{self.backend}:{self.model_name}"
+
+
+def _anthropic_sdk():
+    """Import Anthropic SDK only when that backend is used (Gemini-only installs skip it)."""
+    try:
+        import anthropic
+    except ImportError as e:
+        raise RuntimeError(
+            "Anthropic synthesis backend requested but SDK not installed: pip install anthropic "
+            "(Gemini-only: set SUPPORT_AGENT_LLM_BACKEND=google with GOOGLE_API_KEY or GEMINI_API_KEY; "
+            "leave ANTHROPIC_API_KEY unset and use pip install -r code/requirements-gemini.txt)."
+        ) from e
+    return anthropic
 
 
 def build_agent_llm() -> AgentLlm | None:
@@ -51,10 +67,11 @@ def build_agent_llm() -> AgentLlm | None:
             raise RuntimeError(
                 "SUPPORT_AGENT_LLM_BACKEND=anthropic requires ANTHROPIC_API_KEY in the environment"
             )
+        sdk = _anthropic_sdk()
         return AgentLlm(
             "anthropic",
             MODEL,
-            anthropic_client=anthropic.Anthropic(api_key=anth_key, timeout=HTTP_TIMEOUT_S),
+            anthropic_client=sdk.Anthropic(api_key=anth_key, timeout=HTTP_TIMEOUT_S),
             gemini_api_key="",
         )
     if bk_raw == "google":
@@ -66,10 +83,11 @@ def build_agent_llm() -> AgentLlm | None:
 
     # auto
     if anth_key:
+        sdk = _anthropic_sdk()
         return AgentLlm(
             "anthropic",
             MODEL,
-            anthropic_client=anthropic.Anthropic(api_key=anth_key, timeout=HTTP_TIMEOUT_S),
+            anthropic_client=sdk.Anthropic(api_key=anth_key, timeout=HTTP_TIMEOUT_S),
             gemini_api_key="",
         )
     if g_key:

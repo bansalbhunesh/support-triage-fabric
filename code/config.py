@@ -52,6 +52,7 @@ def _pick_google_api_key() -> str:
 GOOGLE_API_KEY = _pick_google_api_key()
 GEMINI_MODEL = os.environ.get("SUPPORT_AGENT_GEMINI_MODEL", "gemini-2.0-flash")
 # auto | anthropic | google — auto picks Anthropic when ANTHROPIC_API_KEY is set, else Google when set.
+# Challenge does not require Anthropic; Gemini-only: set GOOGLE_API_KEY and backend=google (or auto with no anthropic key).
 LLM_BACKEND = os.environ.get("SUPPORT_AGENT_LLM_BACKEND", "auto").strip().lower()
 
 # HTTP timeouts for synthesis (Anthropic SDK / shared httpx semantics)
