@@ -126,6 +126,9 @@ export SUPPORT_AGENT_LLM_BACKEND=google   # optional override
 # Explainability blob on every ticket (JSON `trace` key — not merged into official CSV columns)
 export SUPPORT_AGENT_CLI_TRACE=1
 
+# Optional: official CSV = issue, subject, company + five graded columns only (stable order)
+# export SUPPORT_AGENT_CSV_EVAL_MINIMAL=1
+
 # Optional paths / tuning
 export SUPPORT_CORPUS_ROOT="$PWD/data"
 export SUPPORT_AGENT_LOG="$PWD/logs/log.txt"
@@ -177,9 +180,27 @@ python code/agent.py --ticket "My Invite link spins forever..."
 python code/agent.py
 ```
 
+### Transcripts vs agent run log
+
+| Artifact | Purpose |
+| --- | --- |
+| `%USERPROFILE%\hackerrank_orchestrate\log.txt` (Windows) or `$HOME/hackerrank_orchestrate/log.txt` | **AI Fluency / chat transcript** — what AGENTS.md asks your *coding tool* to append (upload this for rubric §4). |
+| `SUPPORT_AGENT_LOG` (default `{repo}/logs/log.txt`) | **Agent runtime transcript** — batch `RESULT`, `GROUNDING_FAIL`, `CONFIDENCE`, indexing, etc. Judges use it to reason about your *agent*; do not substitute it for the mandated tool transcript. |
+
+### Strict 8-column CSV (optional)
+
+If the platform expects **only** inputs + five graded columns in a fixed order:
+
+```bash
+export SUPPORT_AGENT_CSV_EVAL_MINIMAL=1
+python code/main.py --quiet --csv support_tickets/support_tickets.csv support_tickets/output.csv
+```
+
+Default mode keeps **all** input CSV columns and appends/updates the five graded fields (works with most automated checks).
+
 Artifacts:
 
-- Structured transcript: `logs/log.txt` (`RESULT`, `REASONING`, `SOURCES`, **`CONFIDENCE`** composite score + risk tier, **`EXPLAIN`** retrieval summary, **`BATCH_SUMMARY`** / **`LEGACY_MIX_SUMMARY`** after CSV runs).
+- Structured **agent** log: path from `SUPPORT_AGENT_LOG` (`RESULT`, `REASONING`, `SOURCES`, **`CONFIDENCE`**, **`EXPLAIN`**, **`BATCH_SUMMARY`** / **`LEGACY_MIX_SUMMARY`** after CSV runs).
 - Optional `trace` dict on programmatic dict outputs when `--trace` / `SUPPORT_AGENT_CLI_TRACE=1` (**never** written into official CSV columns).
 - **`--csv`** / **`--legacy-csv`**: terminal prints a compact histogram unless `--quiet`.
 
@@ -189,9 +210,9 @@ Legacy harness (`--legacy-csv`) writes `triage_*` enrichment columns alongside o
 
 ## Evaluation checklist (pre-submit)
 
-1. `./support_tickets/output.csv` has **exactly** the required columns appended/updated (depending on ingest template)—never merges `trace` / debug internals.
+1. `./support_tickets/output.csv` carries the five graded columns with rubric literals (`status`, `request_type`) — the writer **sanitizes** invalid model labels. Use **`SUPPORT_AGENT_CSV_EVAL_MINIMAL=1`** if you need exactly eight columns. Never write `trace` / debug blobs into official columns.
 2. Run once with **`SUPPORT_AGENT_REBUILD_INDEX=1`** after changing `INDEX_VERSION` (v6 adds optional sentence-transformer dense embeddings; v5 was hash-semantic only).
-3. Verify `logs/log.txt` shows `INDEX … cache_hit` on warm runs (latency story for judges).
+3. Verify the **agent** log (see `SUPPORT_AGENT_LOG`) shows `INDEX … cache_hit` on warm runs (latency story for judges).
 4. Spot-check a **blank row** CSV (should classify as deterministic invalid-handling guard, not crash).
 5. Confirm keys never appear in zipped `code/` folder.
 6. If using hosted dense embeddings, spot-check logs: query-time embed failures surface as `dense_query_error` / `dense_q_err` and triage still completes (lexical fallback).

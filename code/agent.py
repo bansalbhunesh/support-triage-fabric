@@ -29,6 +29,7 @@ from config import (
     BATCH_SLEEP_S,
     CACHE_DIR,
     CLI_EMBED_TRACE,
+    CSV_EVAL_MINIMAL,
     DATA_DIR,
     DEFAULT_DOMAIN_CONFIRMED_BOOST,
     GROUNDING_SCAN_RESPONSE_URLS,
@@ -355,6 +356,51 @@ def strip_global_flags(argv: list[str]) -> tuple[list[str], dict[str, Any]]:
         "trace_flag": bool(trace_seen or CLI_EMBED_TRACE),
         "quiet_flag": quiet,
         "help_flag": help_seen,
+    }
+
+
+def _sanitize_official_csv_columns(row: dict[str, Any]) -> None:
+    """Force `status` / `request_type` to rubric literals (handles LLM quirks, survives autograders)."""
+    st_raw = str(row.get("status", "")).strip().lower()
+    if st_raw not in {"replied", "escalated"}:
+        row["status"] = "escalated"
+    else:
+        row["status"] = st_raw
+
+    rt_raw = str(row.get("request_type", "")).strip().lower().replace("-", "_").replace(" ", "_")
+    synonyms = {
+        "feature": "feature_request",
+        "feature_req": "feature_request",
+        "product": "product_issue",
+        "bug_report": "bug",
+        "defect": "bug",
+        "not_valid": "invalid",
+        "out_of_scope": "invalid",
+        "spam": "invalid",
+    }
+    rt_raw = synonyms.get(rt_raw, rt_raw)
+    allowed_rt = frozenset({"product_issue", "feature_request", "bug", "invalid"})
+    row["request_type"] = rt_raw if rt_raw in allowed_rt else "invalid"
+
+
+def _official_minimal_csv_row(
+    *,
+    raw_row: dict[str, str],
+    tri: dict[str, Any],
+    issue_col: str,
+    subject_col: str,
+    company_col: str,
+) -> dict[str, str]:
+    """Eight-column eval shape: three inputs plus five graded outputs (deterministic header order)."""
+    return {
+        issue_col: _csv_field(raw_row.get(issue_col, "")),
+        subject_col: _csv_field(raw_row.get(subject_col, "")),
+        company_col: _csv_field(raw_row.get(company_col, "")),
+        "status": _csv_field(tri.get("status")),
+        "product_area": _csv_field(tri.get("product_area")),
+        "response": _csv_field(tri.get("response")),
+        "justification": _csv_field(tri.get("justification")),
+        "request_type": _csv_field(tri.get("request_type")),
     }
 
 
@@ -1156,7 +1202,20 @@ def process_csv(in_path: Path, out_path: Path, llm: AgentLlm | None, quiet: bool
                     "request_type": _csv_field(tri.get("request_type")),
                 }
             )
-            out_rows.append(merged)
+            _sanitize_official_csv_columns(merged)
+            if CSV_EVAL_MINIMAL:
+                out_rows.append(
+                    _official_minimal_csv_row(
+                        raw_row=dict(row),
+                        tri=tri,
+                        issue_col=issue_col,
+                        subject_col=subject_col,
+                        company_col=company_col,
+                    )
+                )
+                _sanitize_official_csv_columns(out_rows[-1])
+            else:
+                out_rows.append(merged)
 
             time.sleep(max(0.0, BATCH_SLEEP_S))
     except KeyboardInterrupt:
@@ -1351,7 +1410,16 @@ def main(argv: list[str]) -> None:
     )
     print(_c(f"Corpus dir:       {DATA_DIR}", DIM))
     print(_c(f"Index cache dir:  {CACHE_DIR}", DIM))
-    print(_c(f"Log transcript:    {LOG_FILE}", DIM))
+    print(_c(f"Agent run log:     {LOG_FILE}", DIM))
+    if CSV_EVAL_MINIMAL:
+        print(
+            _c(
+                "CSV mode: SUPPORT_AGENT_CSV_EVAL_MINIMAL → 8 columns "
+                "(issue, subject, company + 5 graded)",
+                YELLOW,
+            )
+        )
+        log("CSV_MODE", "eval_minimal_columns=1")
     print(_c(f"Synthesis backend: {llm.label if llm else 'disabled (snippet path only)'}", DIM))
 
     aq = argv_filtered

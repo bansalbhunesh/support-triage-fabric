@@ -59,6 +59,13 @@ HTTP_TIMEOUT_S = float(os.environ.get("SUPPORT_AGENT_HTTP_TIMEOUT_S", "120"))
 
 # Batch / CLI
 BATCH_SLEEP_S = float(os.environ.get("SUPPORT_AGENT_BATCH_SLEEP", "0.05"))
+# Official `--csv`: emit only issue/subject/company + five graded columns (stable column order).
+CSV_EVAL_MINIMAL = os.environ.get("SUPPORT_AGENT_CSV_EVAL_MINIMAL", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # Embed explainability blob on each triaged ticket (`trace`). Also enabled with CLI `--trace`.
 CLI_EMBED_TRACE = os.environ.get("SUPPORT_AGENT_CLI_TRACE", "").strip() in {"1", "true", "yes", "on"}

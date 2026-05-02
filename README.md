@@ -112,8 +112,8 @@ Submit on the HackerRank Community Platform:
 You will upload **three** files:
 
 1. **Code zip** — zip your `code/` directory and upload it. Exclude virtualenvs, `node_modules`, build artifacts, the `data/` corpus, and the `support_tickets/` CSVs.
-2. **Predictions CSV** — your agent's output for `support_tickets/support_tickets.csv` (i.e. the populated `output.csv`).
-3. **Chat transcript** — the `log.txt` from the path in [Chat transcript logging](#chat-transcript-logging).
+2. **Predictions CSV** — your agent's output for `support_tickets/support_tickets.csv` (i.e. the populated `output.csv`). If the uploader rejects extra columns, set `SUPPORT_AGENT_CSV_EVAL_MINIMAL=1` before running `--csv` (see `code/README.md`).
+3. **Chat transcript** — the **`hackerrank_orchestrate/log.txt`** coding-assistant log from [Chat transcript logging](#chat-transcript-logging) (**not** the optional agent runtime log inside the repo unless the platform asks for both).
 
 ---
 
